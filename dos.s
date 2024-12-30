@@ -172,7 +172,7 @@ parse_command:
 @unknown:
     pha
     jsr display_message
-    .byte "EH?", $8D, 0
+    .byte "?", 0
     pla
     rts
 
@@ -319,12 +319,12 @@ cmd_chdir:
 @ok:
 display_ok:
     jsr display_message
-    .byte "OK", $8D, 0
+    .byte "OK", 0
     rts
 
 display_error:
     jsr display_message
-    .byte "ERR", $8D, 0
+    .byte "ERR", 0
     rts
 
 cmd_del:
@@ -345,7 +345,7 @@ cmd_del:
 file_not_found:
     jsr fat32_open_cd
     jsr display_message
-    .byte "NOFIND", $8D, 0
+    .byte "NOFIND", 0
     rts
 
 load_proc_3:
@@ -391,7 +391,7 @@ load_proc:
 
 invalid_address:
     jsr display_message
-    .byte "ADR", $8D, 0     
+    .byte "ADR", 0     
     rts
 
     ;bra @success

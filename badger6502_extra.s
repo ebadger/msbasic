@@ -1,5 +1,7 @@
 .segment "A2MON"
 .include "apple2rom.s"
+.segment "A2MORE"
+.include "a2basicrom.s"
 .segment "A2DISK"
 .include "apple2disk.s"
 .segment "BANKROM"
@@ -637,7 +639,8 @@ init:
 
                    ; set specific modes and functions
                    ; no parity, no echo, no Tx interrupt, Rx interrupt, enable Tx/Rx
-    lda #%00001001
+    ;lda #%00001001
+    lda #$0 ; disable for now
     sta A_CMD      ; store to the command register
 
     ;lda #$00      ; 1 stop bits, 8 bit word length, external clock, 16x baud rate
@@ -1100,7 +1103,6 @@ display_message:
     pha
     lda	MSG_ADDR_LOW
     pha				; adjust return	address
-    rts
 
 print_crlf:
     pha
@@ -1218,37 +1220,37 @@ mousetest:
     sty     CH
     
     jsr display_message
-    .byte $8D,"X     =",0
+    .byte "X     =",0
     lda MOUSE_X_POS
     jsr print_hex
     jsr display_message
-    .byte $8D, "Y     =",0
+    .byte "Y     =",0
     lda MOUSE_Y_POS
     jsr print_hex
 
     jsr display_message
-    .byte $8D,"BUTTON=", 0
+    .byte "BUTTON=", 0
     lda MOUSE_FLAGS
     and #$7
     jsr print_nybble
 
     jsr display_message
-    .byte $8D, "FLAGS =",0
+    .byte "FLAGS =",0
     lda MOUSE_FLAGS
     jsr print_hex
 
     jsr display_message
-    .byte $8D, "STATE =",0
+    .byte "STATE =",0
     lda MOUSE_STATE
     jsr print_hex
 
     jsr display_message
-    .byte $8D, "REPORT=",0
+    .byte "REPORT=",0
     lda MOUSE_REPORT
     jsr print_hex
 
     jsr display_message
-    .byte $8D, "BYTE  =",0
+    .byte "BYTE  =",0
     lda MOUSE_BYTE
     jsr print_hex
 
@@ -1273,7 +1275,7 @@ joytest:
     jsr print_hex
 
     jsr display_message
-    .byte ",Y=",0
+    .byte "Y=",0
 
     ldx #$1
     jsr PREAD
@@ -1558,6 +1560,7 @@ irq:
     rti
 
 nmi:
+    bit $C006
     pha
     phx
 @check_interrupts:
@@ -2168,284 +2171,10 @@ final_exit:
     ;ply
     plx
     pla
+    bit $C007
     rti
 
-do_nothing:
-    RTS
 
-.segment "RETURN"
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
-    rts
     
 .segment "DATASEG"
 ; ============================================================================================
