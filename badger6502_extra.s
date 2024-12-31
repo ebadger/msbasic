@@ -176,6 +176,7 @@ dos_addr_p3    = dos_command + $6F  ; 2 bytes
 
 ; SOFT SWITCHES
 
+SS_BASROM_ON   = $C006
 SS_BASROM_OFF  = $C007
 SS_GRAPHICS    = $C050 ; Display Graphics
 SS_TEXT        = $C051 ; Display Text
@@ -581,6 +582,8 @@ via_init:
 ;CODE
 init:
 
+    bit SS_BASROM_OFF
+
 ; init PS/2 kb stuff
     lda #$00
     sta KBSTATE
@@ -629,7 +632,6 @@ init:
     bit SS_DISPLAY_1
     bit SS_FULLSCREEN
     bit SS_HIRES
-    sta SS_BASROM_OFF
     bit SS_R_ROM2
 
     stz INPUTBUFFER
@@ -1103,6 +1105,7 @@ display_message:
     pha
     lda	MSG_ADDR_LOW
     pha				; adjust return	address
+    rts
 
 print_crlf:
     pha
@@ -1560,7 +1563,14 @@ irq:
     rti
 
 nmi:
-    bit $C006
+    bit SS_BASROM_ON
+    jmp nmi_banked
+nmi_unbank:
+    bit SS_BASROM_OFF
+    rti
+
+.segment "NMI"
+nmi_banked:
     pha
     phx
 @check_interrupts:
@@ -2171,10 +2181,7 @@ final_exit:
     ;ply
     plx
     pla
-    bit $C007
-    rti
-
-
+    jmp nmi_unbank
     
 .segment "DATASEG"
 ; ============================================================================================
