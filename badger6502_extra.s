@@ -580,12 +580,15 @@ via_init:
     lda #$0
     sta ACR
 
-    lda #$7F
+    lda #$7F       ; clear interrupt bits
     sta IFR
+    sta MB1_IFR
 
     lda #%11111011 
     sta IER        ; enable interrupts for CA2, CA1, CB1, CB2 and Timer1, Timer2
 
+    lda #%10100000
+    sta MB1_IER    ; enable Timer2 only
     rts
 
 ;CODE
@@ -1498,8 +1501,7 @@ irq:
     pha
 
     ; clear interrupt bit 5 for timer 2
-    lda #$20
-    sta MB1_IFR
+    lda MB1_T2L
 
     lda #PS2_START
     sta KBSTATE    
