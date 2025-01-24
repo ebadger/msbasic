@@ -1500,8 +1500,10 @@ nmi_mouse_decode:
 irq:
     pha
 
-    lda #$7F       ; clear interrupt bits
-    sta MB1_IFR
+    lda #$80
+    sta MB1_IER
+
+    lda MB1_T2L    ; clear the interrupt bit
 
     lda #PS2_START
     sta KBSTATE    
@@ -1553,8 +1555,8 @@ check_via_interrupts:
     jmp final_exit
 
 @ps2_keyboard_decode_long:
-    lda #$1
-    sta IFR
+    ;lda #$1
+    ;sta IFR
     jmp @ps2_keyboard_decode
 
 @ps2_mouse_decode:          ; decode 11 bits from the PS/2 mouse
@@ -1945,6 +1947,9 @@ check_via_interrupts:
     ; By setting this timer to 400us
     ; if timer elapses and we haven't reset the keyboard parsing state machine
     ; do that 
+
+    lda #$A0
+    sta MB1_IER  ; enable t2 interrupt
 
     lda #$FF
     sta MB1_T2L
