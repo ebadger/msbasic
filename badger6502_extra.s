@@ -1500,8 +1500,8 @@ nmi_mouse_decode:
 irq:
     pha
 
-    ; clear interrupt bit 5 for timer 2
-    lda MB1_T2L
+    lda #$7F       ; clear interrupt bits
+    sta MB1_IFR
 
     lda #PS2_START
     sta KBSTATE    
