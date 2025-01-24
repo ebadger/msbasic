@@ -37,11 +37,23 @@ PCR            = $C20C     ; peripheral control register
 IFR            = $C20D 
 IER            = $C20E     ; interrupt enable register
 
-;ROMDISK
-RD_LOW         = $C300
-RD_HIGH        = $C301
-RD_BANK        = $C302
-RD_DATA        = $C303
+; devices
+; Mockingboard Via1
+MB1_PORTB          = $C400
+MB1_PORTA          = $C401
+MB1_DDRB           = $C402
+MB1_DDRA           = $C403
+MB1_T1CL           = $C404
+MB1_T1CH           = $C405
+MB1_T1LL           = $C406
+MB1_T1LH           = $C407
+MB1_T2L            = $C408
+MB1_T2H            = $C409
+MB1_SHCTL          = $C40A
+MB1_ACR            = $C40B     ; auxiliary control register
+MB1_PCR            = $C40C     ; peripheral control register
+MB1_IFR            = $C40D 
+MB1_IER            = $C40E     ; interrupt enable register
 
 ;ROMDISK VARIABLES
 
@@ -684,27 +696,6 @@ textmode:
     bit SS_DISPLAY_1
     bit SS_FULLSCREEN
     rts
-    
-; loderunner
-_loderunner:
-    lda #8
-    sta DEST_HIGH
-
-    stz SOURCE_HIGH
-    stz DEST_LOW
-    stz SOURCE_LOW
-    stz RD_BYTES_LOW
-
-    lda #$B6
-    sta RD_BYTES_HIGH
-
-    stz RD_LOW
-    stz RD_HIGH
-    stz RD_BANK
-
-    jsr romdisk_load
-    jmp $6000
-
 
 .segment "OS"
 .include "libfat32.s"
@@ -1350,57 +1341,6 @@ joytest:
 ;RD_BANK = $D032
 ;RD_DATA = $D033
 
-romdisk_load:
-
-    ; RD_BYTES_LOW / RD_BYTES_HIGH - are the number of bytes to read from the ROM disk
-    ; RD_SOURCE_LOW / RD_SOURCE_HIGH - are the high and low starting address in ROM disk
-    ; RD_DEST_LOW / RD_DEST_HIGH - are the starting destination address point for the copied data
-    ; ramdisk copy will set RAMDISK address based on RD_SOURCE and start copying to RD_DEST from whatever RD_BANK is set
-
-    pha
-@loop:
-    ldx RD_BYTES_LOW
-    cpx #$00
-    beq @decrement_high
-    bra @copy
-
-@decrement_high:
-    ldx RD_BYTES_HIGH
-    cpx #$00
-    beq @done
-    dec RD_BYTES_HIGH
-
-@copy:
-    dec RD_BYTES_LOW
-
-    ; load ramdisk with source address and read, and then copy to dest address - increment both addresses
-    lda SOURCE_LOW
-    sta RD_LOW
-    lda SOURCE_HIGH
-    sta RD_HIGH
-    
-    lda RD_DATA        ;  data from romdisk
-    sta (DEST_LOW)     ; write to destination address in RAM
-
-    ; increment both source and dest addresses
-
-    inc SOURCE_LOW
-    bne @increment_dest
-    inc SOURCE_HIGH    
-
-@increment_dest:   
-    inc DEST_LOW
-    bne @loop
-    inc DEST_HIGH
-    bra @loop
-
-@done:
-    ldy RD_BYTES_HIGH
-    cpx #$00
-    
-    pla
-    rts
-
 ; ================================================================================
 ; Mouse deoding routing - in banked ROM because it won't fit
 ; ================================================================================
@@ -1555,6 +1495,16 @@ nmi_mouse_decode:
 ; ============================================================================================
 
 irq:
+    pha
+
+    ; clear interrupt bit 5 for timer 2
+    lda #$20
+    sta MB1_IFR
+
+    lda #PS2_START
+    sta KBSTATE    
+
+    pla
     rti
 
 nmi:
@@ -1985,8 +1935,20 @@ check_via_interrupts:
     lda #$1
     sta IFR ; clear interrupt
 
-    ldx KBSTATE
+    ; set mockingboard via1 timer 2 for $FF clock cycles
+    ; approximately 400us.  PS/2 clock pulses are ~28us with ~80us
+    ; from the start of one pulse to the start of the next pulse
+    ; full 11 bits takes ~1ms.  
+    ; Time between packets is ~1.6ms
+    ; By setting this timer to 400us
+    ; if timer elapses and we haven't reset the keyboard parsing state machine
+    ; do that 
 
+    lda #$FF
+    sta MB1_T2L
+    stz MB1_T2H
+
+    ldx KBSTATE
     cpx #PS2_START
     beq @start 
 
