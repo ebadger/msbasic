@@ -580,15 +580,9 @@ via_init:
     lda #$0
     sta ACR
 
-    lda #$7F       ; clear interrupt bits
-    sta IFR
-    sta MB1_IFR
-
     lda #%11111011 
     sta IER        ; enable interrupts for CA2, CA1, CB1, CB2 and Timer1, Timer2
 
-    lda #%10100000
-    sta MB1_IER    ; enable Timer2 only
     rts
 
 ;CODE
@@ -1497,20 +1491,6 @@ nmi_mouse_decode:
 ; interrupts
 ; ============================================================================================
 
-irq:
-    pha
-
-    lda #$80
-    sta MB1_IER
-
-    lda MB1_T2L    ; clear the interrupt bit
-
-    lda #PS2_START
-    sta KBSTATE    
-
-    pla
-    rti
-
 nmi:
     pha
     phx
@@ -1938,22 +1918,6 @@ check_via_interrupts:
 @ps2_keyboard_decode:
     lda #$1
     sta IFR ; clear interrupt
-
-    ; set mockingboard via1 timer 2 for $FF clock cycles
-    ; approximately 400us.  PS/2 clock pulses are ~28us with ~80us
-    ; from the start of one pulse to the start of the next pulse
-    ; full 11 bits takes ~1ms.  
-    ; Time between packets is ~1.6ms
-    ; By setting this timer to 400us
-    ; if timer elapses and we haven't reset the keyboard parsing state machine
-    ; do that 
-
-    lda #$A0
-    sta MB1_IER  ; enable t2 interrupt
-
-    lda #$FF
-    sta MB1_T2L
-    stz MB1_T2H
 
     ldx KBSTATE
     cpx #PS2_START
