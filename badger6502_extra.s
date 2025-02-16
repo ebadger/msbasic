@@ -115,6 +115,8 @@ KBD_BYTE       = $CE16
 KBD_SEND       = $CE17
 KBD_LEDS       = $CE18
 
+BANKING_MODE   = $CE80
+
 ; Joystick modes
 JOY_MODE_PADS  = 0
 JOY_MODE_MOUSE = 1
@@ -382,179 +384,6 @@ ps2_mouse_waithigh:
     beq ps2_mouse_waithigh
     rts
 
-; =================================================================================
-set_kbd_leds:
-    phx
-    lda #$F0             ; scanode set
-    sta KBD_SEND
-    jsr ps2_kbd_message   
-    jsr ps2_kbd_read_packet
-
-    lda #$02
-    sta KBD_SEND
-    jsr ps2_kbd_message     ; scancode set #2
-    jsr ps2_kbd_read_packet
-
-    lda #$ED ; set LEDs
-    sta KBD_SEND
-    jsr ps2_kbd_message
-    jsr ps2_kbd_read_packet
-
-    stz KBD_SEND
-    clc
-    lda KEYSTATE + $58 ; caps lock
-    ror
-    rol KBD_SEND
-    lda KEYSTATE + $77 ; num lock
-    ror
-    rol KBD_SEND
-    lda KEYSTATE + $7E ; scroll lock
-    ror
-    rol KBD_SEND
-    jsr ps2_kbd_message
-    jsr ps2_kbd_read_packet
-
-    lda #$F4
-    sta KBD_SEND
-    jsr ps2_kbd_message
-    jsr ps2_kbd_read_packet
-
-@wait_data_high:
-    lda PORTA
-    rol
-    bcc @wait_data_high
-
-@wait_clock_high:
-    lda PORTA
-    rol
-    rol
-    bcc @wait_clock_high
-    plx
-    jmp via_init ; turn interrupts back on
-
-
-ps2_kbd_message:
-    lda #%01111111 
-    sta IER        ; disable VIA interrupts for now
-
-    lda #PS2_KB_CLK
-    sta DDRA       ; make clock output pin
-
-    lda #$00
-    sta PORTA      ; pull clock low
-    
-    ldy #$0
-    ; wait for 100 microseconds+
-    ldx #$30
-@pause:
-    dex
-    bne @pause
-
-    lda #PS2_KB_DATA | PS2_KB_CLK
-    sta DDRA       ; take the data as output
-
-    lda #$00
-    sta PORTA      ; pull data low
-
-    lda #PS2_KB_DATA  
-    sta DDRA       ; release the clock line
-
-    ldy #$07 ; 8 bits
-    lda KBD_SEND ; ready device code
-
-    clc
-    jsr kbd_send_bit   ; start bit is a zero
-
-    ldx #$1 ; odd parity
-@sendbyte:
-    ror                  ; bit 0 -> carry
-    bcc @send
-    inx                  ; increment x for parity, if carry is set, it's a 1
-@send:
-    jsr kbd_send_bit
-    dey
-    bpl @sendbyte
-
-    txa ; parity stored in X
-    ror ; move bit 0->Carry
-    jsr kbd_send_bit
-
-    sec ; set carry for stop bit
-    jsr kbd_send_bit
-
-    ; release the clock
-    lda #$0
-    sta DDRA
-
-@wait_data_high:
-    lda PORTA
-    rol
-    bcc @wait_data_high
-
-@wait_clock_high:
-    lda PORTA
-    rol
-    rol
-    bcc @wait_clock_high
-
-    rts
-
-kbd_send_bit:
-    pha
-;set data
-    ror                       ; PS2_KB_DATA
-    sta PORTA
-
-@waithigh:
-    lda PORTA
-    and #PS2_KB_CLK
-    beq @waithigh
-
-; wait for clock to drops
-@waitlow:
-    lda PORTA
-    and #PS2_KB_CLK
-    bne @waitlow
-
-    pla
-    rts
-
-ps2_kbd_read_packet:
-    lda #$80
-    sta KBD_BYTE
-
-    jsr ps2_kbd_readbit ; start bit
-    
-@loop:
-    jsr ps2_kbd_readbit ; bit
-    ror KBD_BYTE
-    bcc @loop
-
-    jsr ps2_kbd_readbit ; parity
-    jmp ps2_kbd_readbit ; stop bit
-
-
-; ps2_readbit waits on ps/2 clock
-; populates carry flag with data bit
-ps2_kbd_readbit:
-    jsr ps2_kbd_waitlow
-    lda PORTA          ; read a bit
-    rol                ; populate the carry bit
-    jmp ps2_kbd_waithigh
-
-ps2_kbd_waitlow:
-    ; wait for kbd clock to go low
-    lda PORTA
-    and #PS2_KB_CLK
-    bne ps2_kbd_waitlow
-    rts
-
-ps2_kbd_waithigh:
-    ; wait for kbd clock to go high
-    lda PORTA
-    and #PS2_KB_CLK
-    beq ps2_kbd_waithigh
-    rts
 
 ; =================================================================================
 
@@ -593,6 +422,7 @@ init:
     sta KBKEYUP
     sta KEYTEMP
     sta KEYLAST
+    sta BANKING_MODE
 
     ; init joystick
     sta $C064
@@ -690,26 +520,6 @@ textmode:
     bit SS_FULLSCREEN
     rts
     
-; loderunner
-_loderunner:
-    lda #8
-    sta DEST_HIGH
-
-    stz SOURCE_HIGH
-    stz DEST_LOW
-    stz SOURCE_LOW
-    stz RD_BYTES_LOW
-
-    lda #$B6
-    sta RD_BYTES_HIGH
-
-    stz RD_LOW
-    stz RD_HIGH
-    stz RD_BANK
-
-    jsr romdisk_load
-    jmp $6000
-
 
 .segment "OS"
 .include "libfat32.s"
@@ -1187,21 +997,9 @@ print_nybble:
 
 cls:
 _cls:
-    ;pha
-
     jmp HOME
- ;   lda #$00
- ;   sta DRAW_COLOR
- ;   sta CURSOR_X
- ;   sta CURSOR_Y
 
-    ;jsr fillscreen
-;    jsr clear_text_region
-
-    ;pla
-    ;rts
-
-.segment "BANKROM"
+.segment "CODE"
 
 ; some test routines
 
@@ -1340,218 +1138,6 @@ joytest:
     jmp @loop
 
 
-; ============================================================================================
-; ROMDISK routines
-; ============================================================================================
-;ROMDISK VARIABLES
-;RD_BYTES_LOW  = $BE
-;RD_BYTES_HIGH = $BF
-;RD_DEST_LOW   = $C0
-;RD_DEST_HIGH  = $C1
-;RD_SOURCE_LOW  = $BC
-;RD_SOURCE_HIGH = $BD
-;RD_LOW  = $D030
-;RD_HIGH = $D031
-;RD_BANK = $D032
-;RD_DATA = $D033
-
-romdisk_load:
-
-    ; RD_BYTES_LOW / RD_BYTES_HIGH - are the number of bytes to read from the ROM disk
-    ; RD_SOURCE_LOW / RD_SOURCE_HIGH - are the high and low starting address in ROM disk
-    ; RD_DEST_LOW / RD_DEST_HIGH - are the starting destination address point for the copied data
-    ; ramdisk copy will set RAMDISK address based on RD_SOURCE and start copying to RD_DEST from whatever RD_BANK is set
-
-    pha
-@loop:
-    ldx RD_BYTES_LOW
-    cpx #$00
-    beq @decrement_high
-    bra @copy
-
-@decrement_high:
-    ldx RD_BYTES_HIGH
-    cpx #$00
-    beq @done
-    dec RD_BYTES_HIGH
-
-@copy:
-    dec RD_BYTES_LOW
-
-    ; load ramdisk with source address and read, and then copy to dest address - increment both addresses
-    lda SOURCE_LOW
-    sta RD_LOW
-    lda SOURCE_HIGH
-    sta RD_HIGH
-    
-    lda RD_DATA        ;  data from romdisk
-    sta (DEST_LOW)     ; write to destination address in RAM
-
-    ; increment both source and dest addresses
-
-    inc SOURCE_LOW
-    bne @increment_dest
-    inc SOURCE_HIGH    
-
-@increment_dest:   
-    inc DEST_LOW
-    bne @loop
-    inc DEST_HIGH
-    bra @loop
-
-@done:
-    ldy RD_BYTES_HIGH
-    cpx #$00
-    
-    pla
-    rts
-
-; ================================================================================
-; Mouse deoding routing - in banked ROM because it won't fit
-; ================================================================================
-nmi_mouse_decode:
-    ldx MOUSE_STATE    
-
-    cpx #PS2_M_START
-    beq @m_start 
-
-    cpx #PS2_M_BITS
-    beq @m_bits
-      
-    cpx #PS2_M_PARITY
-    beq @m_parity
-
-    cpx #PS2_M_STOP
-    beq @m_stop
-
-    ; should never get here
-    bra @exit_long
-
-@m_start:
-    ; should be zero - maybe check later
-    inc MOUSE_STATE  ; 0->1
-    lda #$80
-    sta MOUSE_BYTE
-    bra @exit_long
-
-@m_bits:
-    lda PORTB
-    ror             ; move PS2_MOUSE_DATA into carry bit
-    ror MOUSE_BYTE
-    ; bit 0 of MOUSE_BYTE initialized to $80
-    ; after 8 shifts right, carry will be set
-    bcs @m_toparity
-@exit_long:
-    jmp @exit
-
-@m_toparity:
-    inc MOUSE_STATE ; 1->2
-    bra @exit_long
-
-@m_parity:
-    ; should probably check the parity bit - all 1 data bits + parity bit should be odd #
-    inc MOUSE_STATE ; 2->3
-    bra @exit_long
-
-@m_stop:
-    stz MOUSE_STATE ; 3->0
-        
-@process_mouse_report:
-    lda MOUSE_REPORT
-    cmp #MOUSE_REPORT_A
-    bne @report_x 
-    lda MOUSE_BYTE
-    and #$8                ; in the flag report, bit 3 is always 1
-    beq @exit             ; zero flag enabled means bit not set
-    lda MOUSE_BYTE
-    sta MOUSE_FLAGS
-
-; set gamepad buttons - bit 0 is left button, bit 1 is right button
-    ror
-    ror           ; rotate left button to bit 7
-    sta $C061
-    ror           ; rotate right button into bit 7
-    sta $C062
-
-    inc MOUSE_REPORT       ; #MOUSE_REPORT_X
-    bra @exit
-
-@report_x:       
-    cmp #MOUSE_REPORT_X
-    bne @report_y
-    inc MOUSE_REPORT       ; #MOUSE_REPORT_Y
-
-    ; if sign bit is 1 (negative) and result of addition is > than previous value
-    ; set to 0
-    ; if sign bit is 0 (positive) and result of addition is < than previous value
-    ; set to $FF
-
-    clc 
-    lda MOUSE_X_POS     ; current mouse x pos
-    adc MOUSE_BYTE      ; add the delta
-    cmp MOUSE_X_POS     ; if carry is set, then the sum >= previous x, else sum < previous x
-    sta MOUSE_X_POS
-    beq @exit
-    bcs @x_gt
-@x_lt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    asl
-    bpl @x_max         ; if new pos is < old pos but not a negative movement, cap to max   
-    bra @exit
-@x_gt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    asl
-    bmi @x_min        ; if new pos > old pos but not a positive moment, cap to min
-    bra @exit
-@x_min:
-    stz MOUSE_X_POS
-    bra @exit
-@x_max:
-    lda #$FF
-    sta MOUSE_X_POS
-    bra @exit
-
-@report_y:
-    stz MOUSE_REPORT      ; reset expected report
-    sec
-    lda MOUSE_Y_POS 
-    adc MOUSE_BYTE
-    cmp MOUSE_Y_POS      ; if carry is set, then the sum >= previous x, else sum < previous x
-    sta MOUSE_Y_POS
-    beq @exit
-    bcs @y_gt
-
-@y_lt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    bpl @y_max         ; if new pos is < old pos but not a negative movement, cap to max   
-    bra @exit
-@y_gt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    bmi @y_min        ; if new pos > old pos but not a positive moment, cap to min
-    bra @exit
-@y_min:
-    stz MOUSE_Y_POS
-    bra @exit
-@y_max:
-    lda #$FF
-    sta MOUSE_Y_POS
-    bra @exit
-@exit:
-
-    lda #$2 ; clear the interrupt
-    sta IFR
-
-    ;jmp nmi_exit
-    jmp check_via_interrupts
-
 .segment "OS"
 ; ============================================================================================
 ; interrupts
@@ -1561,10 +1147,15 @@ nmi:
     bit SS_BASROM_ON
     pha
     phx
+    phy
     jmp nmi_banked
 
 nmi_unbank:
+    lda BANKING_MODE
+    bne @leaveon
     bit SS_BASROM_OFF
+@leaveon:
+    ply
     plx
     pla
     rti
@@ -1667,9 +1258,6 @@ check_via_interrupts:
     sta IFR
     jmp @T1
 
-
-
-
 ;OPNAPPLE = $C061 ;open apple (command) key data (read)
 ;CLSAPPLE = $C062 ;closed apple (option) key data (read)
 ;These are actually the first two game Pushbutton inputs (PB0
@@ -1736,7 +1324,6 @@ check_via_interrupts:
     ror
     ora #$7F
     sta $C066
-
 
     ; same for up/down
     clc
@@ -2177,7 +1764,328 @@ nmi_exit:
 
 final_exit:
     jmp nmi_unbank
+
+; =================================================================================
+;  PS/2 keyboard routines
+; =================================================================================
+set_kbd_leds:
+    phx
+    lda #$F0             ; scanode set
+    sta KBD_SEND
+    jsr ps2_kbd_message   
+    jsr ps2_kbd_read_packet
+
+    lda #$02
+    sta KBD_SEND
+    jsr ps2_kbd_message     ; scancode set #2
+    jsr ps2_kbd_read_packet
+
+    lda #$ED ; set LEDs
+    sta KBD_SEND
+    jsr ps2_kbd_message
+    jsr ps2_kbd_read_packet
+
+    stz KBD_SEND
+    clc
+    lda KEYSTATE + $58 ; caps lock
+    ror
+    rol KBD_SEND
+    lda KEYSTATE + $77 ; num lock
+    ror
+    rol KBD_SEND
+    lda KEYSTATE + $7E ; scroll lock
+    ror
+    rol KBD_SEND
+    jsr ps2_kbd_message
+    jsr ps2_kbd_read_packet
+
+    lda #$F4
+    sta KBD_SEND
+    jsr ps2_kbd_message
+    jsr ps2_kbd_read_packet
+
+@wait_data_high:
+    lda PORTA
+    rol
+    bcc @wait_data_high
+
+@wait_clock_high:
+    lda PORTA
+    rol
+    rol
+    bcc @wait_clock_high
+    plx
+    jmp via_init ; turn interrupts back on
+
+ps2_kbd_message:
+    lda #%01111111 
+    sta IER        ; disable VIA interrupts for now
+
+    lda #PS2_KB_CLK
+    sta DDRA       ; make clock output pin
+
+    lda #$00
+    sta PORTA      ; pull clock low
     
+    ldy #$0
+    ; wait for 100 microseconds+
+    ldx #$30
+@pause:
+    dex
+    bne @pause
+
+    lda #PS2_KB_DATA | PS2_KB_CLK
+    sta DDRA       ; take the data as output
+
+    lda #$00
+    sta PORTA      ; pull data low
+
+    lda #PS2_KB_DATA  
+    sta DDRA       ; release the clock line
+
+    ldy #$07 ; 8 bits
+    lda KBD_SEND ; ready device code
+
+    clc
+    jsr kbd_send_bit   ; start bit is a zero
+
+    ldx #$1 ; odd parity
+@sendbyte:
+    ror                  ; bit 0 -> carry
+    bcc @send
+    inx                  ; increment x for parity, if carry is set, it's a 1
+@send:
+    jsr kbd_send_bit
+    dey
+    bpl @sendbyte
+
+    txa ; parity stored in X
+    ror ; move bit 0->Carry
+    jsr kbd_send_bit
+
+    sec ; set carry for stop bit
+    jsr kbd_send_bit
+
+    ; release the clock
+    lda #$0
+    sta DDRA
+
+@wait_data_high:
+    lda PORTA
+    rol
+    bcc @wait_data_high
+
+@wait_clock_high:
+    lda PORTA
+    rol
+    rol
+    bcc @wait_clock_high
+
+    rts
+
+kbd_send_bit:
+    pha
+;set data
+    ror                       ; PS2_KB_DATA
+    sta PORTA
+
+@waithigh:
+    lda PORTA
+    and #PS2_KB_CLK
+    beq @waithigh
+
+; wait for clock to drops
+@waitlow:
+    lda PORTA
+    and #PS2_KB_CLK
+    bne @waitlow
+
+    pla
+    rts
+
+ps2_kbd_read_packet:
+    lda #$80
+    sta KBD_BYTE
+
+    jsr ps2_kbd_readbit ; start bit
+    
+@loop:
+    jsr ps2_kbd_readbit ; bit
+    ror KBD_BYTE
+    bcc @loop
+
+    jsr ps2_kbd_readbit ; parity
+    jmp ps2_kbd_readbit ; stop bit
+
+
+; ps2_readbit waits on ps/2 clock
+; populates carry flag with data bit
+ps2_kbd_readbit:
+    jsr ps2_kbd_waitlow
+    lda PORTA          ; read a bit
+    rol                ; populate the carry bit
+    jmp ps2_kbd_waithigh
+
+ps2_kbd_waitlow:
+    ; wait for kbd clock to go low
+    lda PORTA
+    and #PS2_KB_CLK
+    bne ps2_kbd_waitlow
+    rts
+
+ps2_kbd_waithigh:
+    ; wait for kbd clock to go high
+    lda PORTA
+    and #PS2_KB_CLK
+    beq ps2_kbd_waithigh
+    rts
+
+; ================================================================================
+; Mouse deoding routing - in banked ROM because it won't fit
+; ================================================================================
+nmi_mouse_decode:
+    ldx MOUSE_STATE    
+
+    cpx #PS2_M_START
+    beq @m_start 
+
+    cpx #PS2_M_BITS
+    beq @m_bits
+      
+    cpx #PS2_M_PARITY
+    beq @m_parity
+
+    cpx #PS2_M_STOP
+    beq @m_stop
+
+    ; should never get here
+    bra @exit_long
+
+@m_start:
+    ; should be zero - maybe check later
+    inc MOUSE_STATE  ; 0->1
+    lda #$80
+    sta MOUSE_BYTE
+    bra @exit_long
+
+@m_bits:
+    lda PORTB
+    ror             ; move PS2_MOUSE_DATA into carry bit
+    ror MOUSE_BYTE
+    ; bit 0 of MOUSE_BYTE initialized to $80
+    ; after 8 shifts right, carry will be set
+    bcs @m_toparity
+@exit_long:
+    jmp @exit
+
+@m_toparity:
+    inc MOUSE_STATE ; 1->2
+    bra @exit_long
+
+@m_parity:
+    ; should probably check the parity bit - all 1 data bits + parity bit should be odd #
+    inc MOUSE_STATE ; 2->3
+    bra @exit_long
+
+@m_stop:
+    stz MOUSE_STATE ; 3->0
+        
+@process_mouse_report:
+    lda MOUSE_REPORT
+    cmp #MOUSE_REPORT_A
+    bne @report_x 
+    lda MOUSE_BYTE
+    and #$8                ; in the flag report, bit 3 is always 1
+    beq @exit             ; zero flag enabled means bit not set
+    lda MOUSE_BYTE
+    sta MOUSE_FLAGS
+
+; set gamepad buttons - bit 0 is left button, bit 1 is right button
+    ror
+    ror           ; rotate left button to bit 7
+    sta $C061
+    ror           ; rotate right button into bit 7
+    sta $C062
+
+    inc MOUSE_REPORT       ; #MOUSE_REPORT_X
+    bra @exit
+
+@report_x:       
+    cmp #MOUSE_REPORT_X
+    bne @report_y
+    inc MOUSE_REPORT       ; #MOUSE_REPORT_Y
+
+    ; if sign bit is 1 (negative) and result of addition is > than previous value
+    ; set to 0
+    ; if sign bit is 0 (positive) and result of addition is < than previous value
+    ; set to $FF
+
+    clc 
+    lda MOUSE_X_POS     ; current mouse x pos
+    adc MOUSE_BYTE      ; add the delta
+    cmp MOUSE_X_POS     ; if carry is set, then the sum >= previous x, else sum < previous x
+    sta MOUSE_X_POS
+    beq @exit
+    bcs @x_gt
+@x_lt:
+    lda MOUSE_FLAGS
+    asl
+    asl
+    asl
+    bpl @x_max         ; if new pos is < old pos but not a negative movement, cap to max   
+    bra @exit
+@x_gt:
+    lda MOUSE_FLAGS
+    asl
+    asl
+    asl
+    bmi @x_min        ; if new pos > old pos but not a positive moment, cap to min
+    bra @exit
+@x_min:
+    stz MOUSE_X_POS
+    bra @exit
+@x_max:
+    lda #$FF
+    sta MOUSE_X_POS
+    bra @exit
+
+@report_y:
+    stz MOUSE_REPORT      ; reset expected report
+    sec
+    lda MOUSE_Y_POS 
+    adc MOUSE_BYTE
+    cmp MOUSE_Y_POS      ; if carry is set, then the sum >= previous x, else sum < previous x
+    sta MOUSE_Y_POS
+    beq @exit
+    bcs @y_gt
+
+@y_lt:
+    lda MOUSE_FLAGS
+    asl
+    asl
+    bpl @y_max         ; if new pos is < old pos but not a negative movement, cap to max   
+    bra @exit
+@y_gt:
+    lda MOUSE_FLAGS
+    asl
+    asl
+    bmi @y_min        ; if new pos > old pos but not a positive moment, cap to min
+    bra @exit
+@y_min:
+    stz MOUSE_Y_POS
+    bra @exit
+@y_max:
+    lda #$FF
+    sta MOUSE_Y_POS
+    bra @exit
+@exit:
+
+    lda #$2 ; clear the interrupt
+    sta IFR
+
+    ;jmp nmi_exit
+    jmp check_via_interrupts
+
 .segment "DATASEG"
 ; ============================================================================================
 ; data
