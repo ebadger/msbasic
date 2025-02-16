@@ -115,7 +115,6 @@ KBD_BYTE       = $CE16
 KBD_SEND       = $CE17
 KBD_LEDS       = $CE18
 
-BANKING_MODE   = $CE80
 
 ; Joystick modes
 JOY_MODE_PADS  = 0
@@ -146,6 +145,9 @@ KEYSTATE        = $CB00
 fat32_variables = $CC00
 GAMEPAD1        = $CEE0
 GAMEPAD2        = $CEF0
+
+; BANKING VARIABLE
+BANKING_MODE   = $CAFE
 
 ;GAMEPAD INDICES
 
@@ -229,11 +231,6 @@ init:
     sei
     cld
 
-    ;lda #<irq_default
-    ;sta IRQLOC
-    ;lda #>irq_default
-    ;sta IRQLOC+1
-
     lda SS_BASROM_OFF
 
 ; init PS/2 kb stuff
@@ -273,7 +270,6 @@ init:
     lda #$80
     sta MOUSE_X_POS
     sta MOUSE_Y_POS
-
     
     ldx #STACK_TOP
     txs
@@ -303,6 +299,11 @@ init:
 
     jsr via_init
     
+    ; initialize the mouse
+    ;lda SS_BASROM_ON
+    ;jsr mouse_on
+    lda SS_BASROM_OFF
+
     cli
 
     lda #$9B
@@ -312,6 +313,10 @@ init:
     jsr     SETVID          ;  as I/O dev's
     jsr     SETKBD
     jsr     hook_buffer
+
+    jsr display_message
+    .byte "3RIC 6502 OS/3 2025",$8D,$8D,0
+
     jsr     MON
 
     jmp @loop
@@ -1025,19 +1030,7 @@ check_via_interrupts:
     jmp @ps2_keyboard_decode
 
 @ps2_mouse_decode:          ; decode 11 bits from the PS/2 mouse
-    lda $D000
-    inc $D000
-    cmp $D000
-    sta $D000
-    bne @no_mouse
     jmp nmi_mouse_decode
-
-@no_mouse:
-    lda #$2
-    sta IFR
-@shift:
-@exit_long_3:
-    jmp @exit
 
 @shift_long:
     ror
@@ -1062,8 +1055,11 @@ check_via_interrupts:
     sta IFR  ; clear interrupt 
 
     ;lda PORTB
+
+@shift:
 @exit_long:
-    bra @exit_long_3
+@exit_long_3:
+    jmp @exit
 
 @T2_long:
     lda #$20
@@ -1104,7 +1100,7 @@ check_via_interrupts:
     
     lda #$7F
     sta $C065         ; for mouse mode, terminate Y axis here
-    bra @exit_long_3
+    jmp @exit
 
 @t2_gamepads:
     ; if neither left or right are down, we're at midpoint, discharge virtual capacitor now
@@ -1150,7 +1146,7 @@ check_via_interrupts:
     ora #$7F
     sta $C067
 
-    bra @exit_long_3
+    jmp @exit
 
 @T1:
     lda T1CL ; clear the interrupt flag
@@ -1415,7 +1411,7 @@ check_via_interrupts:
     beq @stop
 
     ; should never get here
-    bra @exit_long_2
+    jmp @exit
 
 @start:
     ; should be zero - maybe check later
@@ -1431,16 +1427,16 @@ check_via_interrupts:
     rol             ; load PS2_KB_DATA into carry flag
     ror KBTEMP
     bcs @toparity
-    bra @exit_long_2
+    jmp @exit
 
 @toparity:
     inc KBSTATE  ; keys->parity
-    bra @exit_long_2
+    jmp @exit
 
 @parity:
     ; should probably check the parity bit - all 1 data bits + parity bit should be odd #
     inc KBSTATE   ; parity->stop
-    bra @exit_long_2
+    jmp @exit
 
 @stop:
     stz KBSTATE  ; stop->start
@@ -1451,13 +1447,13 @@ check_via_interrupts:
     cmp #$E0           ; set the extended bit if it's an extended character
     bne @notextended
     sta KBEXTEND
-    bra @exit_long_2   ; updated the state as extended, we're done here
+    jmp @exit          ; updated the state as extended, we're done here
 
 @notextended:
     cmp #$F0           ; set the key up bit if it's a key up
     bne @notkeyup
     sta KBKEYUP
-    bra @exit_long_2  ; updated key up state, we're done here
+    jmp @exit          ; updated key up state, we're done here
  
 @notkeyup:
     lda KBKEYUP        ; check the key up flag
@@ -1478,7 +1474,8 @@ check_via_interrupts:
 
 @clear:
     stz KEYSTATE,x
-    bra @exit_long_2
+
+    jmp @exit
 
 @setkeystate:          ; set the key state - this is key down path
     ldx KBTEMP
@@ -2140,4 +2137,4 @@ ps2_ascii_control:
 .segment "BOOTVECTORS"
     .word nmi
     .word init
-    .word irq_default
+    .word IRQ
