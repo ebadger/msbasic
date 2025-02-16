@@ -7,7 +7,7 @@
 .segment "BANKROM"
 .include "picodriveterm.s"
 
-.segment "BANKROM"
+.segment "OS"
 
 
 ;Keyboard
@@ -200,190 +200,6 @@ SS_W_BANK1     = $C089 ; Read ROM; write RAM bank 1 also $C08D
 SS_R_ROM1      = $C08A ; Read ROM; no write also $C08E
 SS_RW_BANK1    = $C08B ; Read/write RAM bank 1 also $C08F
 
-;CSWL           = $36
-
-mouse_on:
-    stz MOUSE_FLAGS
-    stz MOUSE_X_POS
-    stz MOUSE_Y_POS
-    stz MOUSE_BYTE
-    stz MOUSE_REPORT
-    stz MOUSE_STATE
-
-    lda #$F3
-    sta MOUSE_SEND
-    jsr mouse_message   ; set sampling rate
-    jsr ps2_read_mouse_packet
-
-    lda #$0A
-    sta MOUSE_SEND
-    jsr mouse_message  ; set sampling rate to 5 reports per second
-    jsr ps2_read_mouse_packet
-
-    lda #$E8 ; set resolution
-    sta MOUSE_SEND
-    jsr mouse_message
-    jsr ps2_read_mouse_packet
-
-    lda #$02 ; set resolution to 4 count/mm
-    sta MOUSE_SEND
-    jsr mouse_message
-    jsr ps2_read_mouse_packet
-
-    lda #$F4
-    sta MOUSE_SEND
-    jsr mouse_message
-    jsr ps2_read_mouse_packet
-
-@wait_data_high:
-    lda PORTB
-    ror
-    bcc @wait_data_high
-
-@wait_clock_high:
-    lda PORTB
-    ror
-    ror
-    bcc @wait_clock_high
-
-    jsr via_init ; turn interrupts back on
-    rts
-
-mouse_off:
-    lda #$F5
-    sta MOUSE_SEND
-    jsr mouse_message
-    rts
-
-mouse_message:
-    lda #%01111111 
-    sta IER        ; disable VIA interrupts for now
-
-    lda #PS2_MOUSE_CLK
-    sta DDRB       ; make clock output pin
-
-    lda #$00
-    sta PORTB      ; pull clock low
-    
-    ldy #$0
-    ; wait for 100 microseconds+
-    ldx #$30
-@pause:
-    dex
-    bne @pause
-
-    lda #PS2_MOUSE_DATA | PS2_MOUSE_CLK
-    sta DDRB       ; take the data as output
-
-    lda #$00
-    sta PORTB      ; pull data low
-
-    lda #PS2_MOUSE_DATA  
-    sta DDRB       ; release the clock line
-
-    ldy #$07 ; 8 bits
-    lda MOUSE_SEND ; ready device code
-
-    clc
-    jsr mouse_send_bit   ; start bit is a zero
-
-    ldx #$1 ; odd parity
-@sendbyte:
-    ror                  ; bit 0 -> carry
-    bcc @send
-    inx                  ; increment x for parity, if carry is set, it's a 1
-@send:
-    jsr mouse_send_bit
-    dey
-    bpl @sendbyte
-
-    txa ; parity stored in X
-    ror ; move bit 0->Carry
-    jsr mouse_send_bit
-
-    sec ; set carry for stop bit
-    jsr mouse_send_bit
-
-    ; release the clock
-    lda #$0
-    sta DDRB
-
-@wait_data_high:
-    lda PORTB
-    ror
-    bcc @wait_data_high
-
-@wait_clock_high:
-    lda PORTB
-    ror
-    ror
-    bcc @wait_clock_high
-
-    rts
-
-mouse_send_bit:
-    pha
-;set data
-    rol                       ; PS2_MOUSE_DATA
-    sta PORTB
-
-@waithigh:
-    lda PORTB
-    and #PS2_MOUSE_CLK
-    beq @waithigh
-
-; wait for clock to drops
-@waitlow:
-    lda PORTB
-    and #PS2_MOUSE_CLK
-    bne @waitlow
-
-    pla
-    rts
-
-ps2_read_mouse_packet:
-    lda #$80
-    sta MOUSE_BYTE
-
-    jsr ps2_mouse_readbit ; start bit
-    
-@loop:
-    jsr ps2_mouse_readbit ; bit
-    ror MOUSE_BYTE
-    bcc @loop
-
-    jsr ps2_mouse_readbit ; parity
-    jsr ps2_mouse_readbit ; stop bit
-
-    lda MOUSE_BYTE
-    jsr print_hex
-    jsr print_crlf
-
-    rts
-
-; ps2_readbit waits on ps/2 clock
-; populates carry flag with data bit
-ps2_mouse_readbit:
-    jsr ps2_mouse_waitlow
-    lda PORTB          ; read a bit
-    ror                ; populate the carry bit
-    jsr ps2_mouse_waithigh
-    rts
-
-ps2_mouse_waitlow:
-    ; wait for mouse clock to go low
-    lda PORTB
-    and #PS2_MOUSE_CLK
-    bne ps2_mouse_waitlow
-    rts
-
-ps2_mouse_waithigh:
-    ; wait for mouse clock to go high
-    lda PORTB
-    and #PS2_MOUSE_CLK
-    beq ps2_mouse_waithigh
-    rts
-
 
 ; =================================================================================
 
@@ -410,7 +226,14 @@ via_init:
 
 ;CODE
 init:
+    sei
+    cld
 
+    lda #<irq_default
+    sta IRQLOC
+    lda #>irq_default
+    sta IRQLOC+1
+    
     bit SS_BASROM_OFF
 
 ; init PS/2 kb stuff
@@ -451,8 +274,6 @@ init:
     sta MOUSE_X_POS
     sta MOUSE_Y_POS
 
-    sei
-    cld
     
     ldx #STACK_TOP
     txs
@@ -486,7 +307,7 @@ init:
     
     cli
 
-    lda #$9B
+    ;lda #$9B
 @loop:
     ;jsr WOZMON
 
@@ -1143,6 +964,9 @@ joytest:
 ; interrupts
 ; ============================================================================================
 
+irq_default:
+    rti
+    
 nmi:
     bit SS_BASROM_ON
     pha
@@ -1943,6 +1767,189 @@ ps2_kbd_waithigh:
 ; ================================================================================
 ; Mouse deoding routing - in banked ROM because it won't fit
 ; ================================================================================
+mouse_on:
+    stz MOUSE_FLAGS
+    stz MOUSE_X_POS
+    stz MOUSE_Y_POS
+    stz MOUSE_BYTE
+    stz MOUSE_REPORT
+    stz MOUSE_STATE
+
+    lda #$F3
+    sta MOUSE_SEND
+    jsr mouse_message   ; set sampling rate
+    jsr ps2_read_mouse_packet
+
+    lda #$0A
+    sta MOUSE_SEND
+    jsr mouse_message  ; set sampling rate to 5 reports per second
+    jsr ps2_read_mouse_packet
+
+    lda #$E8 ; set resolution
+    sta MOUSE_SEND
+    jsr mouse_message
+    jsr ps2_read_mouse_packet
+
+    lda #$02 ; set resolution to 4 count/mm
+    sta MOUSE_SEND
+    jsr mouse_message
+    jsr ps2_read_mouse_packet
+
+    lda #$F4
+    sta MOUSE_SEND
+    jsr mouse_message
+    jsr ps2_read_mouse_packet
+
+@wait_data_high:
+    lda PORTB
+    ror
+    bcc @wait_data_high
+
+@wait_clock_high:
+    lda PORTB
+    ror
+    ror
+    bcc @wait_clock_high
+
+    jsr via_init ; turn interrupts back on
+    rts
+
+mouse_off:
+    lda #$F5
+    sta MOUSE_SEND
+    jsr mouse_message
+    rts
+
+mouse_message:
+    lda #%01111111 
+    sta IER        ; disable VIA interrupts for now
+
+    lda #PS2_MOUSE_CLK
+    sta DDRB       ; make clock output pin
+
+    lda #$00
+    sta PORTB      ; pull clock low
+    
+    ldy #$0
+    ; wait for 100 microseconds+
+    ldx #$30
+@pause:
+    dex
+    bne @pause
+
+    lda #PS2_MOUSE_DATA | PS2_MOUSE_CLK
+    sta DDRB       ; take the data as output
+
+    lda #$00
+    sta PORTB      ; pull data low
+
+    lda #PS2_MOUSE_DATA  
+    sta DDRB       ; release the clock line
+
+    ldy #$07 ; 8 bits
+    lda MOUSE_SEND ; ready device code
+
+    clc
+    jsr mouse_send_bit   ; start bit is a zero
+
+    ldx #$1 ; odd parity
+@sendbyte:
+    ror                  ; bit 0 -> carry
+    bcc @send
+    inx                  ; increment x for parity, if carry is set, it's a 1
+@send:
+    jsr mouse_send_bit
+    dey
+    bpl @sendbyte
+
+    txa ; parity stored in X
+    ror ; move bit 0->Carry
+    jsr mouse_send_bit
+
+    sec ; set carry for stop bit
+    jsr mouse_send_bit
+
+    ; release the clock
+    lda #$0
+    sta DDRB
+
+@wait_data_high:
+    lda PORTB
+    ror
+    bcc @wait_data_high
+
+@wait_clock_high:
+    lda PORTB
+    ror
+    ror
+    bcc @wait_clock_high
+
+    rts
+
+mouse_send_bit:
+    pha
+;set data
+    rol                       ; PS2_MOUSE_DATA
+    sta PORTB
+
+@waithigh:
+    lda PORTB
+    and #PS2_MOUSE_CLK
+    beq @waithigh
+
+; wait for clock to drops
+@waitlow:
+    lda PORTB
+    and #PS2_MOUSE_CLK
+    bne @waitlow
+
+    pla
+    rts
+
+ps2_read_mouse_packet:
+    lda #$80
+    sta MOUSE_BYTE
+
+    jsr ps2_mouse_readbit ; start bit
+    
+@loop:
+    jsr ps2_mouse_readbit ; bit
+    ror MOUSE_BYTE
+    bcc @loop
+
+    jsr ps2_mouse_readbit ; parity
+    jsr ps2_mouse_readbit ; stop bit
+
+    lda MOUSE_BYTE
+    jsr print_hex
+    jsr print_crlf
+
+    rts
+
+; ps2_readbit waits on ps/2 clock
+; populates carry flag with data bit
+ps2_mouse_readbit:
+    jsr ps2_mouse_waitlow
+    lda PORTB          ; read a bit
+    ror                ; populate the carry bit
+    jsr ps2_mouse_waithigh
+    rts
+
+ps2_mouse_waitlow:
+    ; wait for mouse clock to go low
+    lda PORTB
+    and #PS2_MOUSE_CLK
+    bne ps2_mouse_waitlow
+    rts
+
+ps2_mouse_waithigh:
+    ; wait for mouse clock to go high
+    lda PORTB
+    and #PS2_MOUSE_CLK
+    beq ps2_mouse_waithigh
+    rts
+
+
 nmi_mouse_decode:
     ldx MOUSE_STATE    
 
