@@ -292,8 +292,7 @@ init:
 
                    ; set specific modes and functions
                    ; no parity, no echo, no Tx interrupt, Rx interrupt, enable Tx/Rx
-    ;lda #%00001001
-    lda #$0 ; disable for now
+    lda #%00001001
     sta A_CMD      ; store to the command register
 
     ;lda #$00      ; 1 stop bits, 8 bit word length, external clock, 16x baud rate
