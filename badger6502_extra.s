@@ -1553,26 +1553,24 @@ nmi_mouse_decode:
     jmp check_via_interrupts
 
 .segment "OS"
-
-
 ; ============================================================================================
 ; interrupts
 ; ============================================================================================
 
-irq:
-    rti
-
 nmi:
     bit SS_BASROM_ON
+    pha
+    phx
     jmp nmi_banked
+
 nmi_unbank:
     bit SS_BASROM_OFF
+    plx
+    pla
     rti
 
 .segment "NMI"
 nmi_banked:
-    pha
-    phx
 @check_interrupts:
     ; check the ACIA status register to see if we've received data
     ; reading the status register clears the irq bit
@@ -2178,9 +2176,6 @@ nmi_exit:
     jmp check_via_interrupts
 
 final_exit:
-    ;ply
-    plx
-    pla
     jmp nmi_unbank
     
 .segment "DATASEG"
