@@ -229,12 +229,12 @@ init:
     sei
     cld
 
-    lda #<irq_default
-    sta IRQLOC
-    lda #>irq_default
-    sta IRQLOC+1
-    
-    bit SS_BASROM_OFF
+    ;lda #<irq_default
+    ;sta IRQLOC
+    ;lda #>irq_default
+    ;sta IRQLOC+1
+
+    lda SS_BASROM_OFF
 
 ; init PS/2 kb stuff
     lda #$00
@@ -301,24 +301,18 @@ init:
     sta A_CTL      ; program the ctl register
 
 
-    ;jsr A2INIT
 
     jsr via_init
     
     cli
 
-    ;lda #$9B
+    lda #$9B
 @loop:
-    ;jsr WOZMON
-
-    ;jsr     RESET
     jsr     SETNORM         ;  set screen mode
     jsr     A2INIT          ;  and init kbd/screen
     jsr     SETVID          ;  as I/O dev's
     jsr     SETKBD
     jsr     hook_buffer
-    ;jsr     cls
-
     jsr     MON
 
     jmp @loop
@@ -968,8 +962,8 @@ irq_default:
     rti
     
 nmi:
-    bit SS_BASROM_ON
     pha
+    lda SS_BASROM_ON
     phx
     phy
     jmp nmi_banked
@@ -977,7 +971,7 @@ nmi:
 nmi_unbank:
     lda BANKING_MODE
     bne @leaveon
-    bit SS_BASROM_OFF
+    lda SS_BASROM_OFF
 @leaveon:
     ply
     plx
@@ -2147,4 +2141,4 @@ ps2_ascii_control:
 .segment "BOOTVECTORS"
     .word nmi
     .word init
-    .word IRQ 
+    .word irq_default
