@@ -10,7 +10,7 @@
 ;dos_cout_mode  = dos_command + $6F  ; 1 byte
 ;dos_cursor     = dos_command + $70  ; 1 byte
 
-DOS_hook_cout = $03ea
+DOS_hook_cout  = $03ea
 ;CSWL          = $36
 
 hook_buffer_no_output:
@@ -41,10 +41,48 @@ setup_cout_hook:
     pla
     rts
 
+command_table:
+    .byte "BLOAD",0
+    .word cmd_bload-1
+    .byte "BRUN",0
+    .word cmd_brun-1
+    .byte "BSAVE",0
+    .word cmd_bsave-1
+    .byte "CAT",0
+    .word cmd_cat-1
+    .byte "CD",0
+    .word cmd_chdir-1
+    .byte "DC",0
+    .word cmd_dc-1
+    .byte "DEL",0
+    .word cmd_del-1
+    .byte "DIR",0
+    .word cmd_dir-1
+    .byte "DS",0
+    .word cmd_ds-1
+    .byte "FLOAD",0
+    .word cmd_fload-1
+    .byte "HELP",0
+    .word cmd_help-1
+    .byte "HEXDUMP",0
+    .word cmd_hexdump-1
+    .byte "INITDEV",0
+    .word cmd_initdev-1
+    .byte "JUMP",0
+    .word cmd_jump-1
+    .byte "MON",0
+    .word cmd_exit-1
+    .byte "OWRITE",0
+    .word cmd_owrite-1
+    .byte 0, 0
+
 dos:
     jsr setup_cout_hook
     jsr _cls
     jsr fat32_start
+
+    jsr display_message
+    .byte $8D, $8D, "3RIC 6502 OS/3 2025",$8D,$8D,0
 
 newprompt:
     jsr display_message
@@ -92,9 +130,9 @@ parse_command:
 @count_params:
     iny
     cpy #$80
-    beq @process_command
+    beq process_command
     lda dos_command,y
-    beq @process_command
+    beq process_command
     cmp #' ' ; is it a space
     beq @delim
     cmp #',' ; is it a comma?
@@ -112,64 +150,11 @@ parse_command:
     bne @count_params
 
 ; match with an existing command
-@process_command:
-    jsr match_command
-    .byte "DEL", 0
-    .word cmd_del-1
-
-    jsr match_command
-    .byte "FLOAD",0
-    .word cmd_fload-1
     
-    jsr match_command
-    .byte "CAT",0
-    .word cmd_cat-1
+process_command:
+    jsr scan_command_table
 
-    jsr match_command
-    .byte "DC",0
-    .word cmd_dc-1
-
-    jsr match_command
-    .byte "DS",0
-    .word cmd_ds-1
-
-    jsr match_command
-    .byte "HD",0
-    .word cmd_hexdump-1
-    
-    jsr match_command
-    .byte "CD",0
-    .word cmd_chdir-1
-
-    jsr match_command
-    .byte "DIR",0
-    .word cmd_dir-1
-
-    jsr match_command
-    .byte "J",0
-    .word cmd_jump-1
-
-    jsr match_command
-    .byte "BLOAD",0
-    .word cmd_bload-1
-
-    jsr match_command
-    .byte "BRUN",0
-    .word cmd_brun-1
-
-    jsr match_command
-    .byte "BSAVE",0
-    .word cmd_bsave-1
-
-    jsr match_command
-    .byte "OWRITE",0
-    .word cmd_owrite-1
-
-    jsr match_command
-    .byte "Q",0
-    .word cmd_exit-1
-
-@unknown:
+unknown:
     pha
     jsr display_message
     .byte "EH?", $8D, 0
@@ -181,19 +166,48 @@ parse_command:
 
 
 .segment "BANKROM"
-cmd_hexdump:
-    ldx dos_param_0
-    jsr dos_setfileparam
 
-    jsr fat32_finddirent
-    bcs file_not_found_long
-
-    jsr fat32_opendirent
-
-    jsr fat32_hexdump_file
-    jsr fat32_open_cd
+cmd_initdev:
+    lda SS_BASROM_ON
+    jsr mouse_on
+    jsr set_kbd_leds
+    lda SS_BASROM_OFF
     rts
- 
+
+cmd_help:
+    jsr display_message
+    .byte $8D, "COMMANDS",$8D,"--------",$8D,0
+
+    ldy #$0    
+    lda #<command_table
+    sta MSG_ADDR_LOW
+    lda #>command_table
+    sta MSG_ADDR_HIGH
+
+@loop_commands:
+    lda (MSG_ADDR_LOW),y
+    beq @crlf
+    jsr print_char
+    iny
+    bra @loop_commands
+
+@crlf:
+    jsr print_crlf
+
+    clc
+    tya
+    adc MSG_ADDR_LOW
+    sta MSG_ADDR_LOW
+    lda MSG_ADDR_HIGH
+    adc #$0
+    sta MSG_ADDR_HIGH
+
+    ldy #$3
+    lda (MSG_ADDR_LOW),y
+    bne @loop_commands
+
+    rts
+
 cmd_dc:
     ldx dos_param_0
     jsr dos_setfileparam
@@ -222,6 +236,19 @@ cmd_cat:
     jsr fat32_opendirent
 
     jsr fat32_cat_file
+    jsr fat32_open_cd
+    rts
+
+cmd_hexdump:
+    ldx dos_param_0
+    jsr dos_setfileparam
+
+    jsr fat32_finddirent
+    bcs file_not_found_long
+
+    jsr fat32_opendirent
+
+    jsr fat32_hexdump_file
     jsr fat32_open_cd
     rts
 
@@ -461,23 +488,20 @@ restore_bytesremaining:
     stz fat32_bytesremaining+3
     rts
 
-;****************************************************************************
-; STRING COMPARISON
-; x contains the # of matching chars
-; if carry is cleared, it matches, if carry is set, it doesn't match
-match_command:
+scan_command_table:
     clc 
+    pla                     ; pull return address off of the stack
+    pla 
     ldx #0
     ldy	#0
-    pla
+    lda #<command_table       
     sta	MSG_ADDR_LOW
-    pla
-    sta	MSG_ADDR_HIGH       ; get return address off the stack
-    bne	@advance
+    lda #>command_table
+    sta	MSG_ADDR_HIGH       ; point to the first command in the command table
 
 @nextchar:
     lda	(MSG_ADDR_LOW),Y	; next message character    
-    beq	@dobranch      		; null terminator?	yes, exit
+    beq	@dobranch    		; null terminator?	yes, exit
     jsr	match_char
     bcs @nomatch            ; previous char didn't match - skip checking
     inx
@@ -489,27 +513,50 @@ match_command:
     bne	@nextchar
 
 @nomatch:					; next byte
-    inc MSG_ADDR_LOW
-    lda (MSG_ADDR_LOW), y    
-    bne @nomatch            ; advance to the null
-
-    clc
+    clc                     ; todo check for overflow and increment MSG_ADDR_HIGH
     lda MSG_ADDR_LOW
-    adc #$2
+    adc #$1
     sta MSG_ADDR_LOW
     lda MSG_ADDR_HIGH
     adc #$0
     sta MSG_ADDR_HIGH
 
+    lda (MSG_ADDR_LOW), y    
+    bne @nomatch            ; advance to the null
+
+@nextcommand:
+    ldx #$0
+    ldy #$0
+
+    clc                     ; jump over the address to the next command
+    lda MSG_ADDR_LOW
+    adc #$3
+    sta MSG_ADDR_LOW
+    lda MSG_ADDR_HIGH
+    adc #$0
+    sta MSG_ADDR_HIGH
+
+    lda (MSG_ADDR_LOW),y
+    bne @nextchar
+
+    ; if we get here, we're at the end of the LIST
+@endofcommands:
+    lda #<unknown
+    sec
+    sbc #$1
+    sta MSG_ADDR_LOW
+    lda #>unknown
+    sbc #$0
     pha
-    lda	MSG_ADDR_LOW
-    pha			   	        ; adjust return	address
+    lda MSG_ADDR_LOW
+    pha
     rts
+
 
 @dobranch:
     iny
     iny
-    lda (MSG_ADDR_LOW), y
+    lda (MSG_ADDR_LOW), y   ; grab the address from command table and put it on stack
     pha
     dey
     lda (MSG_ADDR_LOW), y

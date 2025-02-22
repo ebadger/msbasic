@@ -14,7 +14,7 @@
 .ifdef BADGER6502
         jmp     COLD_START                ;$E000
         jmp     mouse_on                  ;$E003
-        jmp     _cls                      ;$E006
+        jmp     hook_buffer_no_output     ;$E006
         jmp     _cls                      ;$E009
         jmp     read_char_async_apple     ;$E00C
         jmp     _cls                      ;$E00F
