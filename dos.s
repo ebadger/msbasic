@@ -80,9 +80,10 @@ dos:
     jsr setup_cout_hook
     jsr _cls
     jsr fat32_start
+    jsr kbclear
 
     jsr display_message
-    .byte $8D, $8D, "3RIC 6502 OS/3 2025",$8D,$8D,0
+    .byte $8D, $8D, "3RIC 6502 OS/3 (C) 2025",$8D,$8D,0
 
 newprompt:
     jsr display_message

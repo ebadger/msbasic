@@ -39,25 +39,16 @@ PCR            = $C20C     ; peripheral control register
 IFR            = $C20D 
 IER            = $C20E     ; interrupt enable register
 
-;ROMDISK
-RD_LOW         = $C300
-RD_HIGH        = $C301
-RD_BANK        = $C302
-RD_DATA        = $C303
 
-;ROMDISK VARIABLES
+;General purpose ZP VARIABLES
 
 SOURCE_LOW     = $B0
 SOURCE_HIGH    = $B1
-
 RD_BYTES_LOW   = $B2
 RD_BYTES_HIGH  = $B3
+MSG_ADDR_LOW   = $B4
+MSG_ADDR_HIGH  = $B5
 
-DEST_LOW       = $B4
-DEST_HIGH      = $B5
-
-MSG_ADDR_LOW   = $B6
-MSG_ADDR_HIGH  = $B7
 
 ;VIA config flags 
 ICLR           = %01111111  ; clear all VIA interrupts
@@ -254,6 +245,18 @@ via_init:
 
     rts
 
+kbclear:
+    ldx #$0
+    lda #$0
+@clrbufx:
+    sta KEYSTATE, x
+    sta KBBUF, x
+    sta dos_command, x
+    sta IN, x
+    inx
+    bne @clrbufx
+    rts
+
 ;CODE
 init:
     sei
@@ -270,8 +273,9 @@ init:
     sta KBKEYUP
     sta KEYTEMP
     sta KEYLAST
+    sta KEYRAM
     sta BANKING_MODE
-
+    
     ; init joystick
     sta $C064
     sta $C065
@@ -279,7 +283,6 @@ init:
     sta $C067
 
     sta MUTE_OUTPUT
-    sta JOYSTICK_MODE  ; init to gamepads
     sta MOUSE_STATE
     sta MOUSE_REPORT
 
@@ -292,6 +295,7 @@ init:
     sta fat32_workspace+1, x
     sta fat32_variables, x
     sta IN, x
+    sta $CE00,x         ; special variables
     inx
     bne @clrbufx
 
@@ -323,8 +327,6 @@ init:
     ;lda #$00      ; 1 stop bits, 8 bit word length, external clock, 16x baud rate
     lda #$1F       ; 1 stop bits, 8 bit word length, internal clock, 19.2k baud rate
     sta A_CTL      ; program the ctl register
-
-
 
     jsr via_init
     
@@ -830,12 +832,6 @@ print_nybble:
     jsr print_char
     rts
 
-;wozlong:
-;    jmp $FF00
-
-;==========================================================================
-; drawing routines
-;==========================================================================
 
 cls:
 _cls:
@@ -863,37 +859,37 @@ mousetest:
     sty     CH
     
     jsr display_message
-    .byte "X     =",0
+    .byte $8D,"X     =",0
     lda MOUSE_X_POS
     jsr print_hex
     jsr display_message
-    .byte "Y     =",0
+    .byte $8D,"Y     =",0
     lda MOUSE_Y_POS
     jsr print_hex
 
     jsr display_message
-    .byte "BUTTON=", 0
+    .byte $8D,"BUTTON=", 0
     lda MOUSE_FLAGS
     and #$7
     jsr print_nybble
 
     jsr display_message
-    .byte "FLAGS =",0
+    .byte $8D,"FLAGS =",0
     lda MOUSE_FLAGS
     jsr print_hex
 
     jsr display_message
-    .byte "STATE =",0
+    .byte $8D,"STATE =",0
     lda MOUSE_STATE
     jsr print_hex
 
     jsr display_message
-    .byte "REPORT=",0
+    .byte $8D,"REPORT=",0
     lda MOUSE_REPORT
     jsr print_hex
 
     jsr display_message
-    .byte "BYTE  =",0
+    .byte $8D,"BYTE  =",0
     lda MOUSE_BYTE
     jsr print_hex
 
@@ -999,6 +995,8 @@ nmi_unbank:
     bne @leaveon
     bit SS_BASROM_OFF
 @leaveon:
+    lda #$7F
+    sta IFR
     plx
     pla
     rti
@@ -1011,7 +1009,7 @@ nmi_banked:
     ; reading the status register clears the irq bit
     lda A_STS
     and #%00001000   ; check receive bit
-    beq check_via_interrupts
+    beq @check_via_interrupts
 
 @irq_receive:
     ; we now have the byte, we need to add it to the keyboard buffer
@@ -1022,7 +1020,35 @@ nmi_banked:
     sta KEYRAM
     inc KBCURR
 
-check_via_interrupts:
+@kbstrobe:
+    lda KEYRAM     ; strip off the high bit
+    and #$7F
+    sta KEYRAM
+    
+    lda #$10
+    sta IFR  ; clear interrupt 
+@shift:
+@final_exit_long:
+    jmp nmi_unbank
+
+@ps2_mouse_decode:          ; decode 11 bits from the PS/2 mouse
+    lda KEYSTATE + SC_SCROLL
+    bne @decode
+
+    ; if scroll lock is not set, don't decode mouse
+    stz MOUSE_STATE
+    lda #$2
+    sta IFR
+    jmp nmi_unbank
+@decode:
+    jmp @nmi_mouse_decode
+
+@joystick_long:
+    lda #$8
+    sta IFR
+    jmp @joystick
+
+@check_via_interrupts:
     ; check the IFR to see if it's the VIA - aka the keyboard
     lda IFR
     bpl @final_exit_long
@@ -1031,62 +1057,115 @@ check_via_interrupts:
     ror
     bcs @ps2_mouse_decode           ; bit 1
     ror
-    bcs @shift_long                 ; bit 2
+    bcs @shift                      ; bit 2
     ror
     bcs @joystick_long              ; bit 3
     ror
     bcs @kbstrobe                   ; bit 4
     ror
-    bcs @T2_long                    ; bit 5
+    bcs @T2                         ; bit 5
     ror
-    bcs @T1_long                    ; bit 6
+    bcs @T1                         ; bit 6
 
-@final_exit_long:
     jmp nmi_unbank
 
-@ps2_mouse_decode:          ; decode 11 bits from the PS/2 mouse
-    jmp nmi_mouse_decode
+; JOYSTICK
+;OPNAPPLE = $C061 ;open apple (command) key data (read)
+;CLSAPPLE = $C062 ;closed apple (option) key data (read)
+;These are actually the first two game Pushbutton inputs (PB0
+;and PB1) which are borrowed by the Open Apple and Closed Apple
+;keys. Bit 7 is set (=1) in these locations if the game switch or
+;corresponding key is pressed.
 
-@shift_long:
-    ror
-    ldx #$4
-    stx IFR
-    jmp @shift
+;PB2 =      $C063 ;game Pushbutton 2 (read)
+;This input has an option to be connected to the shift key on
+;the keyboard. (See info on the 'shift key mod'.)
 
-@joystick_long:
-    lda #$8
-    sta IFR
-    jmp @joystick
+;PADDLE0 =  $C064 ;bit 7 = status of pdl-0 timer (read)
+;PADDLE1 =  $C065 ;bit 7 = status of pdl-1 timer (read)
+;PADDLE2 =  $C066 ;bit 7 = status of pdl-2 timer (read)
+;PADDLE3 =  $C067 ;bit 7 = status of pdl-3 timer (read)
+;PDLTRIG =  $C070 ;trigger paddles
+;Read this to start paddle countdown, then time the period until
+;$C064-$C067 bit 7 becomes set to determine the paddle position.
+;This takes up to three milliseconds if the paddle is at its maximum
+;extreme (reading of 255 via the standard firmware routine).
 
-@kbstrobe:
-    lda KEYRAM     ; strip off the high bit
-    and #$7F
-    sta KEYRAM
-    
-; reset ps/2 state machine
-    ;stz KBSTATE
-
-    lda #$10
-    sta IFR  ; clear interrupt 
-
-    ;lda PORTB
-
-@shift:
-@exit_long:
-@exit_long_3:
-    bra check_via_interrupts
-
-@T2_long:
+@T2:
     lda #$20
     sta IFR
-    jmp @T2
 
-@T1_long:
+    ;lda T2L          ; clear the interrupt
+
+    lda KEYSTATE + SC_SCROLL 
+    beq @t2_gamepads
+    
+    lda #$7F
+    sta $C065         ; for mouse mode, terminate Y axis here
+    jmp @check_via_interrupts
+
+@t2_gamepads:
+    ; if neither left or right are down, we're at midpoint, discharge virtual capacitor now
+    ; cap is discharged by setting to 0
+    ; gamepad 1
+    lda GAMEPAD1 + GAMEPAD_RIGHT
+    bne @trydown
+    ora #$7F
+    sta $C064
+
+@trydown:
+    ; same for up/down
+    lda GAMEPAD1 + GAMEPAD_DOWN
+    bne @gamepad2
+    ora #$7F
+    sta $C065
+
+@gamepad2:
+    ; gamepad 2
+    lda GAMEPAD2 + GAMEPAD_RIGHT
+    bne @trydown2
+    ora #$7F
+    sta $C066
+
+@trydown2:
+    ; same for up/down
+    lda GAMEPAD2 + GAMEPAD_DOWN
+    bne @t2exit
+    ora #$7F
+    sta $C067
+
+@t2exit:
+    jmp @check_via_interrupts
+
+; ================
+; TIMER 1 handler
+; ================
+
+@T1:
     lda #$40
-    sta IFR
-    jmp @T1
+    sta IFR   ; clear interrupt
 
+    ;lda T1CL ; clear the interrupt flag
+
+    lda KEYSTATE + SC_SCROLL
+    beq @t1_gamepads
+
+    lda #$7F
+    sta $C064  ; for mouse mode, terminate x axis here
+    jmp @check_via_interrupts
+
+@t1_gamepads:
+    ; clear bit 7 on both, we're done - our virtual capacitors have discharged
+    lda #$7F
+    sta $C064
+    sta $C065
+    sta $C066
+    sta $C067
+    jmp @check_via_interrupts
+
+; =========================================
 ;  KEYBOARD decoding
+; =========================================
 
 @ps2_keyboard_decode:
     ldx KBSTATE
@@ -1104,25 +1183,34 @@ check_via_interrupts:
     beq @stop
 
     ; should never get here
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
+
 
 @start:
     ; should be zero - maybe check later
     inc KBSTATE     ; start->keys
     lda #$80
     sta KBTEMP      ; flip bit 7 so when we ror we're done when carry is set
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @keys:
     lda PORTA
     rol             ; load PS2_KB_DATA into carry flag
     ror KBTEMP
     bcs @toparity
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @toparity:
     inc KBSTATE  ; keys->parity
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @parity:
     ; should probably check the parity bit - all 1 data bits + parity bit should be odd #
@@ -1135,15 +1223,21 @@ check_via_interrupts:
     beq @setnonprint
     cpx #SC_CTRL
     beq @setnonprint
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @setnonprint:
     stx KBD_NONPRINT
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @setextended:
     stx KBEXTEND
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @stop:
     stz KBSTATE  ; stop->start
@@ -1180,19 +1274,8 @@ check_via_interrupts:
     lda KEYSTATE + SC_F7
     bne @handlef7
 @skipfncheck:
-    jmp exit_ps2_keyboard             ; updated key up state, we're done here
+    bra @ps2_keyboard_exit
 
-@togglekey:
-    ;stx KBD_LEDS
-    ldx KBD_LEDS
-    lda KEYSTATE,X
-    bne @turnoff
-    lda #$81
-    sta KEYSTATE,X
-    jmp exit_ps2_keyboard
-@turnoff:
-    stz KEYSTATE,x
-    jmp exit_ps2_keyboard
 
 @notupflag:
     lda KBKEYUP
@@ -1212,47 +1295,64 @@ check_via_interrupts:
     stz KBD_LEDS
     jmp @setleds
 
-@skipleds:
-    stz KEYSTATE,x
-    jmp exit_ps2_keyboard
-
 @handlef12:
     bit SS_GRAPHICS
     bit SS_HIRES
     bit SS_DISPLAY_2
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
 
 @handlef11:
     bit SS_GRAPHICS
     bit SS_HIRES
     bit SS_DISPLAY_1
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
 
 @handlef10:
     bit SS_GRAPHICS
     bit SS_LORES
     bit SS_DISPLAY_2
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
 
 @handlef9:
     bit SS_GRAPHICS
     bit SS_LORES
     bit SS_DISPLAY_1
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
 
 @handlef8:
     bit SS_TEXT
     bit SS_DISPLAY_2
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
 
 @handlef7:
     bit SS_TEXT
     bit SS_DISPLAY_1
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
+
+@togglekey:
+    ;stx KBD_LEDS
+    ldx KBD_LEDS
+    lda KEYSTATE,X
+    bne @turnoff
+    lda #$81
+    sta KEYSTATE,X
+    bra @ps2_keyboard_exit
+@turnoff:
+    stz KEYSTATE,x
+@ps2_keyboard_exit:
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @setkeytoggle:
     stx KBD_LEDS
-    jmp exit_ps2_keyboard
+    bra @ps2_keyboard_exit
+
+@skipleds:
+    stz KEYSTATE,x
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @setkeystate:          ; set the key state - this is key down path
     ;ldx KBTEMP
@@ -1293,151 +1393,58 @@ check_via_interrupts:
     inc KBCURR
 @nonprint:
     stz KBD_NONPRINT
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @setleds:
     jsr set_kbd_leds
    
-    ; if scroll lock is pressed, toggle joystick mode between 0 and 1
-    cpx #SC_SCROLL
-    bne @exit_long_6
-    lda JOYSTICK_MODE
-    eor #$1
-    sta JOYSTICK_MODE
     stz MOUSE_STATE
     stz MOUSE_REPORT
 @exit_long_6:
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @shifted:
     lda ps2_ascii_shifted, x    
     ora #$80
     sta KEYRAM
     inc KBCURR
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
 @control:
     lda ps2_ascii_control, x
     sta KEYRAM
     inc KBCURR
-    jmp exit_ps2_keyboard
+    lda #$1
+    sta IFR
+    jmp nmi_unbank
 
-
-; JOYSTICK
-;OPNAPPLE = $C061 ;open apple (command) key data (read)
-;CLSAPPLE = $C062 ;closed apple (option) key data (read)
-;These are actually the first two game Pushbutton inputs (PB0
-;and PB1) which are borrowed by the Open Apple and Closed Apple
-;keys. Bit 7 is set (=1) in these locations if the game switch or
-;corresponding key is pressed.
-
-;PB2 =      $C063 ;game Pushbutton 2 (read)
-;This input has an option to be connected to the shift key on
-;the keyboard. (See info on the 'shift key mod'.)
-
-;PADDLE0 =  $C064 ;bit 7 = status of pdl-0 timer (read)
-;PADDLE1 =  $C065 ;bit 7 = status of pdl-1 timer (read)
-;PADDLE2 =  $C066 ;bit 7 = status of pdl-2 timer (read)
-;PADDLE3 =  $C067 ;bit 7 = status of pdl-3 timer (read)
-;PDLTRIG =  $C070 ;trigger paddles
-;Read this to start paddle countdown, then time the period until
-;$C064-$C067 bit 7 becomes set to determine the paddle position.
-;This takes up to three milliseconds if the paddle is at its maximum
-;extreme (reading of 255 via the standard firmware routine).
-
-@T2:
-    lda T2L  ; clear the interrupt
-
-    lda JOYSTICK_MODE
-    beq @t2_gamepads
-    
-    lda #$7F
-    sta $C065         ; for mouse mode, terminate Y axis here
-    jmp @exit
-
-@t2_gamepads:
-    ; if neither left or right are down, we're at midpoint, discharge virtual capacitor now
-    ; cap is discharged by setting to 0
-    ; gamepad 1
-    clc
-    lda GAMEPAD1 + GAMEPAD_RIGHT
-    ;ora KEYSTATE + $74 ; right
-    ;ora KEYSTATE + $8D ; right/up
-    ;ora KEYSTATE + $7A ; right/down
-    ror
-    ror
-    ora #$7F
-    sta $C064
-
-
-    ; same for up/down
-    clc
-    lda GAMEPAD1 + GAMEPAD_DOWN
-    ;ora KEYSTATE + $73 ; 5 on numpad - treat as down for convenience
-    ;ora KEYSTATE + $72 ; down arrow
-    ;ora KEYSTATE + $69 ; down/left
-    ;ora KEYSTATE + $7A ; down/right
-    ror
-    ror
-    ora #$7F
-    sta $C065
-
-
-    ; gamepad 2
-    clc
-    lda GAMEPAD2 + GAMEPAD_RIGHT
-    ror
-    ror
-    ora #$7F
-    sta $C066
-
-    ; same for up/down
-    clc
-    lda GAMEPAD2 + GAMEPAD_DOWN
-    ror
-    ror
-    ora #$7F
-    sta $C067
-
-    jmp @exit
-
-@T1:
-    lda T1CL ; clear the interrupt flag
-
-    lda JOYSTICK_MODE
-    beq @t1_gamepads
-
-    lda #$7F
-    sta $C064  ; for mouse mode, terminate x axis here
-    jmp @exit
-
-@t1_gamepads:
-    ; clear bit 7 on both, we're done - our virtual capacitors have discharged
-    lda #$7F
-    sta $C064
-    sta $C065
-    sta $C066
-    sta $C067
-
-@exit_long_7:
-    jmp @exit
-
-@joystick_gamepads_long:
-    jmp @joystick_gamepads
+; ============================
+; JOYSTICK charge
+; ============================
 
 @joystick:
-    lda #$FF
+
+    stz T1CL
+    stz T1CH
+    stz T2L
+    stz T2H
+
+    lda #$FF                      ; charge the capacitors
     sta $C064
     sta $C065
     sta $C066
     sta $C067
 
-    ldx KEYSTATE + SC_NUMLOCK
-    beq @exit_long_7
-
-    ;lda PORTB
-    lda JOYSTICK_MODE
-    beq @joystick_gamepads_long
+    ; lda PORTB
+    lda KEYSTATE + SC_SCROLL      ; if scroll is on, it's mouse mode
+    bne @joystick_mouse
+    jmp @joystick_gamepads
 
 @joystick_mouse:
     stz MOUSE_T1_H
@@ -1446,21 +1453,25 @@ check_via_interrupts:
     lda MOUSE_X_POS
     sta MOUSE_T1_L
     bne @set_x_timer
-    stz $C064         ; trigger x-axis immediately
+
+    stz $C064                     ; trigger x-axis immediately
     bra @joystick_mouse_y
+
 @set_x_timer:
     ; calculate time for X axis given MOUSE_X_POS
     ; value of MOUSE_X_POS * 11
     ; left shift 3 times for * 8 and add $200 as a fast approximation
-;    asl
-;    rol MOUSE_T1_H
-;    asl
-;    rol MOUSE_T1_H
-;    asl
-;    rol MOUSE_T1_H
-;    sta MOUSE_T1_L
+    
+    ldx #$3
+@x_shift_8:
+    clc
+    rol MOUSE_T1_L
+    rol MOUSE_T1_H
+    dex 
+    bne @x_shift_8
 
-    ldx #$10
+    clc
+    ldx #3
 @x_times_11:
     clc
     lda MOUSE_T1_L
@@ -1476,19 +1487,20 @@ check_via_interrupts:
     lda MOUSE_Y_POS
     sta MOUSE_T2_L
     bne @set_y_timer
-    stz $C065         ; trigger y-axis immediately
+    stz $C065            ; trigger y-axis immediately
     bra @set_timers
 @set_y_timer:
     ; calculate time for Y axis given MOUSE_Y_POS
-;    asl
-;    rol MOUSE_T2_H
-;    asl
-;    rol MOUSE_T2_H
-;    asl
-;    rol MOUSE_T2_H
-;    sta MOUSE_T2_L
 
-    ldx #$10
+    ldx #$3
+@y_shift_8:
+    clc
+    rol MOUSE_T2_L
+    rol MOUSE_T2_H
+    dex 
+    bne @y_shift_8
+
+    ldx #$3
 @y_times_11:
     clc
     lda MOUSE_T2_L
@@ -1501,30 +1513,20 @@ check_via_interrupts:
     bne @y_times_11
 
 @set_timers:
-    lda MOUSE_T2_L
-    ora MOUSE_T2_H
-    beq @skip_t2
-
     clc
     lda MOUSE_T2_L
     sta T2L
     lda MOUSE_T2_H
-;    adc #$2
     sta T2H
-@skip_t2:
-@exit_long_5:
-    lda MOUSE_T1_H
-    ora MOUSE_T1_L
-    beq @skip_t1
-
+    
     clc
     lda MOUSE_T1_L
     sta T1CL
     lda MOUSE_T1_H
-;    adc #$2
     sta T1CH 
-@skip_t1:    
-    jmp @exit
+
+    jmp @check_via_interrupts
+
 
 @joystick_gamepads:
     ; read inputs from gamepads
@@ -1533,7 +1535,6 @@ check_via_interrupts:
     lda #GC_LATCH
     sta PORTB
 
-    phy
     ldy #$1
     ldx #$00
 @read_controllers:    
@@ -1546,7 +1547,7 @@ check_via_interrupts:
     eor #$FF
     and #GC_DATA1
     beq @check2
-    tya
+    lda #$1
     sta GAMEPAD1,x
 
 @check2:
@@ -1554,7 +1555,7 @@ check_via_interrupts:
     eor #$FF
     and #GC_DATA2
     beq @next_clock
-    tya
+    lda #$1
     sta GAMEPAD2,x
 
 @next_clock:
@@ -1567,13 +1568,11 @@ check_via_interrupts:
     ; we're done, bring the clock back down
     ; first time through, this drops the latch pulse
     stz PORTB         
-    ply
 
-    ;   set the buttons
+    ; set the buttons
     ; button pressed
     lda GAMEPAD1 + GAMEPAD_X
     ora GAMEPAD1 + GAMEPAD_B
-    ;ora KEYSTATE + $12  ; shift key
     ror
     ror
     sta $C061
@@ -1582,8 +1581,6 @@ check_via_interrupts:
     ora GAMEPAD1 + GAMEPAD_A
     ora GAMEPAD2 + GAMEPAD_Y
     ora GAMEPAD2 + GAMEPAD_B
-    ;ora KEYSTATE + $14  ; ctrl key
-  
     ror
     ror
     sta $C062
@@ -1594,6 +1591,34 @@ check_via_interrupts:
     ror
     sta $C063
 
+    clc
+    lda GAMEPAD1 + GAMEPAD_LEFT
+    ror
+    ror
+    eor #$FF
+    sta $C064
+
+    clc
+    lda GAMEPAD1 + GAMEPAD_UP
+    ror
+    ror
+    eor #$FF
+    sta $C065
+
+    clc
+    lda GAMEPAD2 + GAMEPAD_LEFT
+    ror
+    ror
+    eor #$FF
+    sta $C066
+
+    clc
+    lda GAMEPAD2 + GAMEPAD_UP
+    ror
+    ror
+    eor #$FF
+    sta $C067
+
     stz T2L
     lda #$6
     sta T2H  ; set T2 for half way
@@ -1603,57 +1628,147 @@ check_via_interrupts:
     lda #$0B
     sta T1CH  ; Set T1 for end discharge check
 
-    clc
-    lda GAMEPAD1 + GAMEPAD_LEFT
-    ;ora KEYSTATE + $6B ; left
-    ;ora KEYSTATE + $6C ; left/up
-    ;ora KEYSTATE + $69 ; left/down
-    eor #$01
-    ror
-    ror
-    ora #$7F
-    sta $C064
-
-    clc
-    lda GAMEPAD1 + GAMEPAD_UP
-    ;ora KEYSTATE + $75 ; up
-    ;ora KEYSTATE + $6C ; up/left
-    ;ora KEYSTATE + $7D ; up/right
-    eor #$01
-    ror
-    ror
-    ora #$7F
-    sta $C065
-
-    clc
-    lda GAMEPAD2 + GAMEPAD_LEFT
-    eor #$01
-    ror
-    ror
-    ora #$7F
-    sta $C066
-
-    clc
-    lda GAMEPAD2 + GAMEPAD_UP
-    eor #$01
-    ror
-    ror
-    ora #$7F
-    sta $C067
-
     ;lda PORTB  ; clear the interrupt
+    jmp @check_via_interrupts
 
-@exit_long_4:
-@exit:
-nmi_exit:
-    jmp check_via_interrupts
+@nmi_mouse_decode:
+    ldx #$2
+    stx IFR
 
-exit_ps2_keyboard:
-    lda #$1
-    sta IFR
+    lda MOUSE_STATE    
 
-final_exit:
-    jmp nmi_unbank
+    ;cmp #PS2_M_START   ; CMP not required since PS2_M_START is 0
+    beq @m_start 
+
+    cmp #PS2_M_BITS
+    beq @m_bits
+      
+    cmp #PS2_M_PARITY
+    beq @m_parity
+
+    cmp #PS2_M_STOP
+    beq @m_stop
+
+    ; should never get here
+    jmp @check_via_interrupts
+
+@m_start:
+    ; should be zero - maybe check later
+    inc MOUSE_STATE  ; 0->1
+    lda #$80
+    sta MOUSE_BYTE
+    jmp @check_via_interrupts
+
+@m_bits:
+    lda PORTB
+    ror             ; move PS2_MOUSE_DATA into carry bit
+    ror MOUSE_BYTE
+    ; bit 0 of MOUSE_BYTE initialized to $80
+    ; after 8 shifts right, carry will be set
+    bcs @m_toparity
+    jmp @check_via_interrupts
+
+@m_toparity:
+    inc MOUSE_STATE ; 1->2
+    jmp @check_via_interrupts
+
+@m_parity:
+    ; should probably check the parity bit - all 1 data bits + parity bit should be odd #
+    inc MOUSE_STATE ; 2->3
+@exit_ps2_mouse:
+    jmp @check_via_interrupts
+
+@m_stop:
+    stz MOUSE_STATE ; 3->0
+        
+@process_mouse_report:
+    lda MOUSE_REPORT
+    ;cmp #MOUSE_REPORT_A   ; compare not needed since MOUSE_REPORT_A is 0
+    bne @report_x 
+    lda MOUSE_BYTE
+    and #$8                ; in the flag report, bit 3 is always 1
+    beq @exit_ps2_mouse    ; zero flag enabled means bit not set
+    lda MOUSE_BYTE
+    sta MOUSE_FLAGS
+
+; set gamepad buttons - bit 0 is left button, bit 1 is right button
+    ror
+    ror           ; rotate left button to bit 7
+    sta $C061
+    ror           ; rotate right button into bit 7
+    sta $C062
+
+    inc MOUSE_REPORT       ; #MOUSE_REPORT_X
+
+    jmp @check_via_interrupts
+
+
+@report_x:       
+    cmp #MOUSE_REPORT_X
+    bne @report_y
+    inc MOUSE_REPORT       ; #MOUSE_REPORT_Y
+
+    ; if sign bit is 1 (negative) and result of addition is > than previous value
+    ; set to 0
+    ; if sign bit is 0 (positive) and result of addition is < than previous value
+    ; set to $FF
+
+    clc 
+    lda MOUSE_X_POS     ; current mouse x pos
+    adc MOUSE_BYTE      ; add the delta
+    cmp MOUSE_X_POS     ; if carry is set, then the sum >= previous x, else sum < previous x
+    sta MOUSE_X_POS
+    beq @exit_ps2_mouse
+    bcs @x_gt
+@x_lt:
+    lda MOUSE_FLAGS
+    and #$10
+    beq @x_max         ; if new pos is < old pos but not a negative movement, cap to max   
+    jmp @check_via_interrupts
+
+@x_gt:
+    lda MOUSE_FLAGS
+    and #$10
+    bne @x_min        ; if new pos > old pos but not a positive moment, cap to min
+    jmp @check_via_interrupts
+
+@x_min:
+    stz MOUSE_X_POS
+    jmp @check_via_interrupts
+
+@x_max:
+    lda #$FF
+    sta MOUSE_X_POS
+    jmp @check_via_interrupts
+
+@report_y:
+    stz MOUSE_REPORT      ; reset expected report
+    clc
+    lda MOUSE_Y_POS 
+    adc MOUSE_BYTE
+    cmp MOUSE_Y_POS      ; if carry is set, then the sum >= previous x, else sum < previous x
+    sta MOUSE_Y_POS
+    beq @exit_ps2_mouse2
+    bcs @y_gt
+
+@y_lt:
+    lda MOUSE_FLAGS
+    and #$20
+    beq @y_max         ; if new pos is < old pos but not a negative movement, cap to max   
+    jmp @check_via_interrupts
+@y_gt:
+    lda MOUSE_FLAGS
+    and #$20    
+    bne @y_min        ; if new pos > old pos but not a positive moment, cap to min
+    jmp @check_via_interrupts
+@y_min:
+    stz MOUSE_Y_POS
+    jmp @check_via_interrupts
+@y_max:
+    lda #$FF
+    sta MOUSE_Y_POS
+@exit_ps2_mouse2:
+    jmp @check_via_interrupts
 
 ; =================================================================================
 ;  PS/2 keyboard routines
@@ -1854,9 +1969,9 @@ mouse_on:
     .byte "MOUSE: SET SAMPLING RATE", $8D,0
 
 @setreportrate:
-    lda #$0A
+    lda #$28
     sta MOUSE_SEND
-    jsr mouse_message  ; set sampling rate to 5 reports per second
+    jsr mouse_message  ; set sampling rate to 40 reports per second
     jsr ps2_read_mouse_packet
 
     cmp #$FA
@@ -2058,161 +2173,6 @@ ps2_mouse_waithigh:
     rts
 
 
-nmi_mouse_decode:
-    ldx #$2
-    lda MOUSE_STATE    
-
-    cmp #PS2_M_START
-    beq @m_start 
-
-    cmp #PS2_M_BITS
-    beq @m_bits
-      
-    cmp #PS2_M_PARITY
-    beq @m_parity
-
-    cmp #PS2_M_STOP
-    beq @m_stop
-
-    ; should never get here
-    stx IFR
-    jmp nmi_unbank
-
-@m_start:
-    ; should be zero - maybe check later
-    inc MOUSE_STATE  ; 0->1
-    lda #$80
-    sta MOUSE_BYTE
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@m_bits:
-    lda PORTB
-    ror             ; move PS2_MOUSE_DATA into carry bit
-    ror MOUSE_BYTE
-    ; bit 0 of MOUSE_BYTE initialized to $80
-    ; after 8 shifts right, carry will be set
-    bcs @m_toparity
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@m_toparity:
-    inc MOUSE_STATE ; 1->2
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@m_parity:
-    ; should probably check the parity bit - all 1 data bits + parity bit should be odd #
-    inc MOUSE_STATE ; 2->3
-@exit:
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@m_stop:
-    stz MOUSE_STATE ; 3->0
-        
-@process_mouse_report:
-    lda MOUSE_REPORT
-    cmp #MOUSE_REPORT_A
-    bne @report_x 
-    lda MOUSE_BYTE
-    and #$8                ; in the flag report, bit 3 is always 1
-    beq @exit             ; zero flag enabled means bit not set
-    lda MOUSE_BYTE
-    sta MOUSE_FLAGS
-
-; set gamepad buttons - bit 0 is left button, bit 1 is right button
-    ror
-    ror           ; rotate left button to bit 7
-    sta $C061
-    ror           ; rotate right button into bit 7
-    sta $C062
-
-    inc MOUSE_REPORT       ; #MOUSE_REPORT_X
-
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@report_x:       
-    cmp #MOUSE_REPORT_X
-    bne @report_y
-    inc MOUSE_REPORT       ; #MOUSE_REPORT_Y
-
-    ; if sign bit is 1 (negative) and result of addition is > than previous value
-    ; set to 0
-    ; if sign bit is 0 (positive) and result of addition is < than previous value
-    ; set to $FF
-
-    clc 
-    lda MOUSE_X_POS     ; current mouse x pos
-    adc MOUSE_BYTE      ; add the delta
-    cmp MOUSE_X_POS     ; if carry is set, then the sum >= previous x, else sum < previous x
-    sta MOUSE_X_POS
-    beq @exit
-    bcs @x_gt
-@x_lt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    asl
-    bpl @x_max         ; if new pos is < old pos but not a negative movement, cap to max   
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@x_gt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    asl
-    bmi @x_min        ; if new pos > old pos but not a positive moment, cap to min
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@x_min:
-    stz MOUSE_X_POS
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@x_max:
-    lda #$FF
-    sta MOUSE_X_POS
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-
-@report_y:
-    stz MOUSE_REPORT      ; reset expected report
-    sec
-    lda MOUSE_Y_POS 
-    adc MOUSE_BYTE
-    cmp MOUSE_Y_POS      ; if carry is set, then the sum >= previous x, else sum < previous x
-    sta MOUSE_Y_POS
-    beq @exit2
-    bcs @y_gt
-
-@y_lt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    bpl @y_max         ; if new pos is < old pos but not a negative movement, cap to max   
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-@y_gt:
-    lda MOUSE_FLAGS
-    asl
-    asl
-    bmi @y_min        ; if new pos > old pos but not a positive moment, cap to min
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-@y_min:
-    stz MOUSE_Y_POS
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
-@y_max:
-    lda #$FF
-    sta MOUSE_Y_POS
-@exit2:
-    stx IFR ; clear interrupt
-    jmp nmi_unbank
 
 .segment "DATASEG"
 ; ============================================================================================
