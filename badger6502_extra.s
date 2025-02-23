@@ -106,6 +106,8 @@ KBD_BYTE       = $CE16
 KBD_SEND       = $CE17
 KBD_LEDS       = $CE18
 KBD_NONPRINT   = $CE19
+MOUSE_X_SIGN   = $CE20
+MOUSE_Y_SIGN   = $CE21
 
 ; Joystick modes
 JOY_MODE_PADS  = 0
@@ -988,6 +990,7 @@ nmi:
     bit SS_BASROM_ON
     pha
     phx
+    phy
     jmp nmi_banked
 
 nmi_unbank:
@@ -995,8 +998,7 @@ nmi_unbank:
     bne @leaveon
     bit SS_BASROM_OFF
 @leaveon:
-    lda #$7F
-    sta IFR
+    ply
     plx
     pla
     rti
@@ -1099,7 +1101,8 @@ nmi_banked:
 
     lda KEYSTATE + SC_SCROLL 
     beq @t2_gamepads
-    
+
+    stz MOUSE_STATE
     lda #$7F
     sta $C065         ; for mouse mode, terminate Y axis here
     jmp @check_via_interrupts
@@ -1151,6 +1154,7 @@ nmi_banked:
     beq @t1_gamepads
 
     lda #$7F
+    stz MOUSE_STATE
     sta $C064  ; for mouse mode, terminate x axis here
     jmp @check_via_interrupts
 
@@ -1535,7 +1539,6 @@ nmi_banked:
     lda #GC_LATCH
     sta PORTB
 
-    ldy #$1
     ldx #$00
 @read_controllers:    
     lda #$00          ; first time through, this drops the latch pulse
@@ -1691,13 +1694,32 @@ nmi_banked:
     lda MOUSE_BYTE
     sta MOUSE_FLAGS
 
+    stz MOUSE_X_SIGN
+    stz MOUSE_Y_SIGN
+
+    ldx #$1
 ; set gamepad buttons - bit 0 is left button, bit 1 is right button
     ror
-    ror           ; rotate left button to bit 7
+    ror               ; rotate left button to bit 7
     sta $C061
-    ror           ; rotate right button into bit 7
+    ror               ; rotate right button into bit 7
     sta $C062
+    ror
+                      ; 3rd mouse button into bit 7
+    ror
+                      ; always 1 in bit 7
+                      ; x sign in carry 
+    rol MOUSE_X_SIGN  ; rol into bit 1 of mouse_x_sign
+    ror               ; y sign in carry
+    rol MOUSE_Y_SIGN  ; rol into bit 1 of mouse_y_sign
 
+    lda KEYSTATE + SC_NUMLOCK
+    beq @noflip
+    lda MOUSE_Y_SIGN
+    eor #$1
+    sta MOUSE_Y_SIGN
+
+@noflip:
     inc MOUSE_REPORT       ; #MOUSE_REPORT_X
 
     jmp @check_via_interrupts
@@ -1712,24 +1734,22 @@ nmi_banked:
     ; set to 0
     ; if sign bit is 0 (positive) and result of addition is < than previous value
     ; set to $FF
+    lda MOUSE_X_SIGN
+    beq @x_add
+@x_sub:
+    clc
+    lda MOUSE_X_POS
+    adc MOUSE_BYTE
+    bcc @x_min
+    sta MOUSE_X_POS
+    jmp @check_via_interrupts
 
+@x_add:
     clc 
     lda MOUSE_X_POS     ; current mouse x pos
     adc MOUSE_BYTE      ; add the delta
-    cmp MOUSE_X_POS     ; if carry is set, then the sum >= previous x, else sum < previous x
+    bcs @x_max
     sta MOUSE_X_POS
-    beq @exit_ps2_mouse
-    bcs @x_gt
-@x_lt:
-    lda MOUSE_FLAGS
-    and #$10
-    beq @x_max         ; if new pos is < old pos but not a negative movement, cap to max   
-    jmp @check_via_interrupts
-
-@x_gt:
-    lda MOUSE_FLAGS
-    and #$10
-    bne @x_min        ; if new pos > old pos but not a positive moment, cap to min
     jmp @check_via_interrupts
 
 @x_min:
@@ -1742,24 +1762,30 @@ nmi_banked:
     jmp @check_via_interrupts
 
 @report_y:
-    stz MOUSE_REPORT      ; reset expected report
-    clc
-    lda MOUSE_Y_POS 
-    adc MOUSE_BYTE
-    cmp MOUSE_Y_POS      ; if carry is set, then the sum >= previous x, else sum < previous x
-    sta MOUSE_Y_POS
-    beq @exit_ps2_mouse2
-    bcs @y_gt
+    stz MOUSE_REPORT   ; last report, reset state 
 
-@y_lt:
-    lda MOUSE_FLAGS
-    and #$20
-    beq @y_max         ; if new pos is < old pos but not a negative movement, cap to max   
+    lda KEYSTATE + SC_NUMLOCK
+    beq @noflip2
+    lda MOUSE_BYTE     ; 2's complement
+    eor #$FF
+    inc
+    sta MOUSE_BYTE
+@noflip2:
+    lda MOUSE_Y_SIGN
+    beq @y_add
+@y_sub:
+    clc
+    lda MOUSE_Y_POS
+    adc MOUSE_BYTE
+    bcc @y_min
+    sta MOUSE_Y_POS
     jmp @check_via_interrupts
-@y_gt:
-    lda MOUSE_FLAGS
-    and #$20    
-    bne @y_min        ; if new pos > old pos but not a positive moment, cap to min
+@y_add:
+    clc 
+    lda MOUSE_Y_POS     ; current mouse x pos
+    adc MOUSE_BYTE      ; add the delta
+    bcs @y_max
+    sta MOUSE_Y_POS
     jmp @check_via_interrupts
 @y_min:
     stz MOUSE_Y_POS
@@ -1969,9 +1995,9 @@ mouse_on:
     .byte "MOUSE: SET SAMPLING RATE", $8D,0
 
 @setreportrate:
-    lda #$28
+    lda #$0A
     sta MOUSE_SEND
-    jsr mouse_message  ; set sampling rate to 40 reports per second
+    jsr mouse_message  ; set sampling rate to 10 reports per second
     jsr ps2_read_mouse_packet
 
     cmp #$FA
@@ -1995,7 +2021,7 @@ mouse_on:
     .byte "MOUSE: SET RESOLUTION", $8D,0
 
 @setresolutioncount:
-    lda #$02 ; set resolution to 4 count/mm
+    lda #$03 ; set resolution to 8 count/mm
     sta MOUSE_SEND
     jsr mouse_message
     jsr ps2_read_mouse_packet
